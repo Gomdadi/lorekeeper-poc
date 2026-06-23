@@ -1,0 +1,13 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+
+# GraphRAG 실행 결과물 (parquet, 캐시, 로그)
+graphrag_workspace/output/
+graphrag_workspace/cache/
+graphrag_workspace/logs/
+graphrag_workspace/settings.yaml
+
+# Neo4j 데이터
+neo4j_data/
