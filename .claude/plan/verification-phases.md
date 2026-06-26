@@ -79,10 +79,15 @@ Phase 4: Indexing
 
 **검증 목표**: 원고 텍스트 → KG/Vector 추출 파이프라인의 구조화 품질을 검증한다.
 
-**전제**: LLM 추출 및 Vector 인덱싱은 MS GraphRAG를 베이스라인으로 사용한다. 스키마 불일치 해소 방안(커스텀 프롬프트, 후처리 변환 등)은 이 Phase 내부에서 결정한다.
+**전제**: 아래 두 방식을 비교해 최종 베이스라인을 결정한다.
+
+| 방식 | 특징 | 고려사항 |
+|------|------|---------|
+| **MS GraphRAG** | 커뮤니티 detection 기반, 자체 파이프라인 | 커스텀 스키마 적용에 후처리 변환 필요 |
+| **neo4j-graphrag-python** | Neo4j 네이티브, `SimpleKGPipeline` | Phase 1 커스텀 스키마를 그대로 적용 가능, fuzzy-matching으로 Entity Resolution 지원 |
 
 **검증 내용**
-- MS GraphRAG 추출 결과가 Phase 1 스키마에 맞게 구조화되는가
+- 두 방식의 추출 결과가 Phase 1 스키마에 맞게 구조화되는가 비교
 - Entity Resolution: 동일 인물의 다양한 호칭(e.g. "카엘", "단장님", "그")이 하나의 노드로 통합되는가
 - 그래프가 얼마나 잘 만들어지는가 (오탐/누락 측정은 Phase 6 담당)
 
@@ -96,8 +101,17 @@ Phase 4: Indexing
 
 **검증 목표**: 신규 KG 엔티티로 기존 DB를 검색할 때 어떤 전략이 유효한지 결정한다.
 
+**전제**: neo4j-graphrag-python의 Retriever를 우선 활용한다.
+
+| 전략 | 구현체 | 설명 |
+|------|--------|------|
+| **AdvancedRAG** | `VectorRetriever` | Vector 유사도 검색만 사용 |
+| **Vector-guided Graph RAG** | `VectorCypherRetriever` | Vector 검색 후 Cypher로 주변 관계 보강 |
+| **Graph-guided Vector RAG** | 커스텀 구현 필요 | Cypher로 관련 엔티티 식별 → 해당 노드 대상 Vector 검색 |
+| **Graph RAG** | `Text2CypherRetriever` | 엔티티 → Cypher 자동 변환으로 KG 직접 탐색 |
+
 **검증 내용**
-- AdvancedRAG(Vector RAG) vs Graph-guided Vector RAG vs Graph RAG 비교
+- 위 네 전략 F1 비교
 - 변인 통제: 일반적인 케이스만 사용, 특수 문제 범위는 Phase 6에서 정의
 - 단일 파이프라인 유지 vs 엔티티 유형별 라우팅 결정
 
