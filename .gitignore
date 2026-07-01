@@ -1,0 +1,22 @@
+# 환경변수
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+dist/
+*.egg-info/
+.ruff_cache/
+
+# uv
+.uv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
