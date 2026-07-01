@@ -1,0 +1,40 @@
+# Copyright (c) "Neo4j"
+# Neo4j Sweden AB [https://neo4j.com]
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
+from .time_warp_compat import VERSION
+
+
+class MarkdAsDriverError(Exception):
+    """Wrap any error as DriverException."""
+
+    def __init__(self, wrapped_exc):
+        super().__init__()
+        self.wrapped_exc = wrapped_exc
+
+
+class TimeWarpError(Exception):
+    """
+    Request cannot be fulfilled with in the current time warp mode.
+
+    The backend understood the request, but is running in time warp mode
+    against an older driver that does not support the requested feature.
+    """
+
+    def __init__(self, feature_name: str):
+        super().__init__(
+            f"{feature_name.capitalize()} is not supported in time warp mode "
+            f"(driver version {'.'.join(map(str, VERSION))})."
+        )

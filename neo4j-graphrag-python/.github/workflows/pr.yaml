@@ -1,0 +1,48 @@
+name: neo4j_graphrag PR
+on: pull_request
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [ '3.10', '3.11', '3.12', '3.13', '3.14' ]
+    steps:
+      - name: Free up disk space (ubuntu-latest)
+        run: |
+          sudo rm -rf /usr/local/lib/android \
+                      /usr/share/dotnet \
+                      /opt/ghc \
+                      /opt/hostedtoolcache
+          sudo apt-get clean || true
+          df -h
+      - name: Check out repository code
+        uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+      - name: Load cached venv
+        id: cached-venv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/uv.lock') }}
+      - name: Install dependencies
+        if: steps.cached-venv.outputs.cache-hit != 'true'
+        run: uv sync --frozen --all-extras --group dev
+      - name: Download SpaCy model
+        if: matrix.python-version != '3.14'
+        run: uv pip install "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+      - name: Check format and linting
+        run: |
+          uv run --frozen ruff check .
+          uv run --frozen ruff format --check .
+      - name: Run strict mypy check
+        run: uv run --frozen mypy .
+      - name: Run unit tests and check coverage
+        run: |
+          uv run --frozen coverage run -m pytest tests/unit
+          uv run --frozen coverage report --fail-under=90

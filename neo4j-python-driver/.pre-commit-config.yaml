@@ -1,0 +1,60 @@
+# See https://pre-commit.com for more information
+# See https://pre-commit.com/hooks.html for more hooks
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # v6.0.0
+    hooks:
+      - id: check-case-conflict
+      - id: check-docstring-first
+      - id: check-symlinks
+      - id: destroyed-symlinks
+      - id: end-of-file-fixer
+        exclude_types:
+          - image
+      - id: mixed-line-ending
+        args: [ --fix=lf ]
+        exclude_types:
+          - batch
+      - id: trailing-whitespace
+        args: [ --markdown-linebreak-ext=md ]
+  - repo: local
+    hooks:
+      - id: isort
+        name: isort
+        entry: isort
+        types_or: [ python, pyi ]
+        language: system
+  - repo: https://github.com/sphinx-contrib/sphinx-lint
+    rev: c883505f64b59c3c5c9375191e4ad9f98e727ccd  # v1.0.2
+    hooks:
+      - id: sphinx-lint
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: 45ef068da5f21267bb2a7ec4a623092959f09ce5  # v0.14.14
+    hooks:
+      - id: ruff-format
+      - id: ruff-check
+        args: [ --fix ]
+      - id: ruff-format
+  - repo: local
+    hooks:
+      - id: unasync
+        name: unasync
+        entry: bin/make-unasync
+        language: system
+        files: "^(src/neo4j/_async|tests/(unit|integration)/async_|testkitbackend/_async)/.*"
+      - id: mypy
+        name: mypy static type check
+        entry: mypy
+        args: [ --show-error-codes, src, tests, testkitbackend, benchkit ]
+        types_or: [ python, pyi ]
+        language: system
+        pass_filenames: false
+        require_serial: true
+      - id: ty benchmarks
+        name: ty check benchmarks
+        entry: ty check
+        args: [ --project, benchmarks ]
+        types_or: [ python, pyi ]
+        language: system
+        pass_filenames: false
+        require_serial: true
