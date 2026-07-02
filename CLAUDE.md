@@ -69,3 +69,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 2. [단계] → 검증: [확인 방법]
 3. [단계] → 검증: [확인 방법]
 ```
+
+---
+
+## 문서 저장 경로
+
+- Plan 문서, 라이브러리/코드 정리 문서 등 작업 중 생성하는 md 문서의 기본 저장 위치는 **현재 작업 디렉토리의 `.claude`**를 기준으로 한다 (예: `.claude/plan/`, `.claude/docs/`).
