@@ -14,6 +14,9 @@ services:
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
+      # APOC export 파일을 host로 노출: apoc.export.cypher.all이 컨테이너의 import 디렉토리에
+      # 쓰는 <variant>.cypher 덤프가 host의 poc/output/에 바로 떨어지게 한다.
+      - ./poc/output:/var/lib/neo4j/import
     healthcheck:
       test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "lorekeeper", "RETURN 1"]
       interval: 10s

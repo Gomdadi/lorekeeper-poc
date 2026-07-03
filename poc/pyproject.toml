@@ -5,6 +5,9 @@ description = "Add your description here"
 requires-python = ">=3.11"
 dependencies = [
     "neo4j>=6.2.0",
-    "neo4j-graphrag>=1.18.0",
+    "neo4j-graphrag[openai]>=1.18.0",  # OpenAI LLM/임베딩 사용을 위한 openai 의존성 포함(numpy도 base로 포함됨)
     "python-dotenv>=1.2.2",
+    "langchain-text-splitters>=0.3.0",  # RecursiveCharacterTextSplitter 어댑터용
+    "kiwipiepy>=0.15.0",  # 한국어 문장 분리(Kiwi 형태소 기반)
+    "kss>=4.0.0",  # 한국어 문장 분리(KSS)
 ]
