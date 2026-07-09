@@ -38,9 +38,35 @@ EMBEDDING_MODEL = "text-embedding-3-small"
 PROMPT_CACHE_KEY = "lorekeeper-extract"
 
 
-def build_llm() -> OpenAILLM:
+class TokenCountingLLM(OpenAILLM):
+    """
+    ainvoke 호출마다 응답 usage를 누적해 변형별 총 토큰 사용량을 집계하는 OpenAILLM.
+
+    extractor는 청크마다 llm.ainvoke를 호출하지만 응답의 usage를 버린다. 여기서 usage를
+    가로채 누적한다. build_llm이 변형마다 새 인스턴스를 만들므로 카운터는 0에서 시작한다.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.total_request_tokens = 0   # 입력(프롬프트) 토큰 누적
+        self.total_response_tokens = 0  # 출력(완성) 토큰 누적
+        self.total_tokens = 0           # 합계 누적
+        self.call_count = 0             # ainvoke 호출 횟수(= 추출 LLM 호출 수)
+
+    async def ainvoke(self, *args, **kwargs):
+        resp = await super().ainvoke(*args, **kwargs)
+        self.call_count += 1
+        # usage는 Optional. 모델이 usage를 안 주면 건너뛴다.
+        if resp.usage:
+            self.total_request_tokens += resp.usage.request_tokens or 0
+            self.total_response_tokens += resp.usage.response_tokens or 0
+            self.total_tokens += resp.usage.total_tokens or 0
+        return resp
+
+
+def build_llm() -> TokenCountingLLM:
     """추출용 OpenAI LLM 인스턴스. prompt_cache_key를 model_params로 넣어 모든 호출 경로에 전달한다."""
-    return OpenAILLM(
+    return TokenCountingLLM(
         model_name=EXTRACTION_MODEL,
         model_params={"prompt_cache_key": PROMPT_CACHE_KEY},
     )
@@ -56,9 +82,11 @@ def build_pipeline(
     resolver: EntityResolver,
     driver: neo4j.Driver,
     database: str,
-) -> Pipeline:
+) -> tuple[Pipeline, TokenCountingLLM]:
     """
-    변형별 splitter/resolver를 받아 인덱싱 DAG를 조립해 반환한다.
+    변형별 splitter/resolver를 받아 인덱싱 DAG를 조립해 (pipeline, llm)을 반환한다.
+
+    llm을 함께 반환하는 이유: 호출측(harness)이 실행 후 llm의 누적 토큰 카운터를 읽어야 한다.
 
     schema/extractor는 매 파이프라인마다 새로 만든다(상태 오염 방지).
     스키마 자체(node_types/relationship_types/patterns)는 run 데이터로 주입하므로
@@ -93,4 +121,4 @@ def build_pipeline(
     # resolver는 입력이 없어 데이터 매핑 없이 순서만 강제(writer 완료 후 실행).
     pipe.connect("writer", "resolver", {})
 
-    return pipe
+    return pipe, llm

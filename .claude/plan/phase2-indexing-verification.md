@@ -62,7 +62,7 @@ run 데이터: `{"splitter": {"text": TEXT}, "schema": {node_types, relationship
 ## 파일별 변경 계획
 
 ### 신규
-- **`poc/src/splitters.py`** — `KiwiSentenceSplitter(TextSplitter)`, `KSSSentenceSplitter(TextSplitter)`. 각각 `async def run(self, text: str) -> TextChunks` 구현: 문장 분리 후(kiwipiepy `Kiwi().split_into_sents` / `kss.split_sentences`) 목표 크기까지 문장을 묶어 `TextChunk(text=..., index=i)` 리스트 생성. `LangChainTextSplitterAdapter`(라이브러리 제공)로 `RecursiveCharacterTextSplitter`를 감싸는 헬퍼도 여기 배치. **`ChapterTaggingSplitter(TextSplitter)` 래퍼 추가**: 원문을 `【N화】` 마커 기준으로 화 단위 선분할 → 각 화 텍스트를 내부 splitter(모든 변형의 splitter를 이걸로 감쌈)로 자름 → 모든 청크 앞에 해당 화 마커를 prefix하고 전체 index 재부여. 마커 없는 중간 청크가 `Event.chapter`/`story_order`를 못 채우는 공백을 막고(문서 §4c 청크별 주입 규약과 일치), 청크가 화 경계를 넘지 않게 되며, 모든 변형에 동일 적용되어 OFAT 공정성 유지.
+- **`poc/src/splitters.py`** — `KiwiSentenceSplitter(TextSplitter)`, `KSSSentenceSplitter(TextSplitter)`. 각각 `async def run(self, text: str) -> TextChunks` 구현: 문장 분리 후(kiwipiepy `Kiwi().split_into_sents` / `kss.split_sentences`) 목표 크기까지 문장을 묶어 `TextChunk(text=..., index=i)` 리스트 생성. `LangChainTextSplitterAdapter`(라이브러리 제공)로 `RecursiveCharacterTextSplitter`를 감싸는 헬퍼도 여기 배치. **`ChapterTaggingSplitter(TextSplitter)` 래퍼 추가**: 원문을 `[N화]` 마커 기준으로 화 단위 선분할 → 각 화 텍스트를 내부 splitter(모든 변형의 splitter를 이걸로 감쌈)로 자름 → 모든 청크 앞에 해당 화 마커를 prefix하고 전체 index 재부여. 마커 없는 중간 청크가 `Event.chapter`/`story_order`를 못 채우는 공백을 막고(문서 §4c 청크별 주입 규약과 일치), 청크가 화 경계를 넘지 않게 되며, 모든 변형에 동일 적용되어 OFAT 공정성 유지.
 - **`poc/src/resolver.py`** — `OpenAIEmbeddingResolver(BasePropertySimilarityResolver)`. `compute_similarity(text_a, text_b) -> float`만 오버라이드(동기 메서드). **주의: `run()`이 모든 쌍에 대해 호출** → 블로킹 방지 위해 먼저 등장 이름을 배치로 `OpenAIEmbeddings(model="text-embedding-3-small").embed_query`로 임베딩해 dict 캐시, `compute_similarity`는 캐시 조회 후 코사인만. `similarity_threshold=0.85`(보수적), `resolve_properties=["name"]`.
 - **`poc/src/extraction_examples.py`** — `EXTRACTION_FEW_SHOT` 문자열. **웹소설 전반**을 커버하는 2~3개 예시(예: 현대 회귀/판타지, 무협, 로판) 각각 Character/Location/Event/CharacterState 추출, 상태변화 시 **새 CharacterState 노드 생성** + `HAS_STATE`+`ESTABLISHED_IN`, `story_order` 채우기, chunk-local 임시 ID를 시연. 참고 원본은 `.claude/docs/kg-extraction-pipeline.md` §4c의 무협 few-shot.
 - **`poc/src/pipeline.py`** — `build_pipeline(splitter, embedder, extractor, writer)` 로 위 DAG 조립(방법 A). `OpenAILLM(model_name="gpt-5.4-mini", model_params={"prompt_cache_key":"lorekeeper-extract"})` 생성 헬퍼 포함(그 외 샘플링·추론 파라미터는 전달하지 않고 모델 기본값 사용). extractor는 `LLMEntityRelationExtractor(llm, use_structured_output=True)`.
@@ -76,7 +76,7 @@ run 데이터: `{"splitter": {"text": TEXT}, "schema": {node_types, relationship
 - **`docker-compose.yml`** — neo4j 서비스 `volumes`에 `- ./poc/output:/var/lib/neo4j/import` 추가(APOC export 파일을 host `poc/output/`로 노출). 반영 후 `docker compose up -d`로 재시작 필요.
 
 ### 입력 규약
-- `poc/data/input.txt` — 사용자가 직접 준비하는 단일 텍스트(모든 변형 공통). 챕터 경계에 `【N화】` 마커를 인라인으로 포함. `ChapterTaggingSplitter`가 이 마커로 화 단위 선분할 후 **각 청크에 마커를 prefix**해 extractor가 모든 청크에서 `Event.chapter`/`story_order`를 채울 수 있게 함. few-shot이 이 마커 읽는 법을 가르침.
+- `poc/data/input.txt` — 사용자가 직접 준비하는 단일 텍스트(모든 변형 공통). 챕터 경계에 `[N화]` 마커를 인라인으로 포함. `ChapterTaggingSplitter`가 이 마커로 화 단위 선분할 후 **각 청크에 마커를 prefix**해 extractor가 모든 청크에서 `Event.chapter`/`story_order`를 채울 수 있게 함. few-shot이 이 마커 읽는 법을 가르침.
 
 ## 프롬프트 캐싱
 

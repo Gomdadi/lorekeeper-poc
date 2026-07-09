@@ -428,7 +428,7 @@ class KoreanEmbeddingResolver(BasePropertySimilarityResolver):
 
 ### 전제: chapter 주입 규약
 
-`Event.chapter`(INTEGER)와 `story_order`는 **LLM이 원문만 봐선 알 수 없다**(청크는 순수 텍스트다). 따라서 인덱싱 시 각 청크 앞에 `【3화】` 같은 회차 마커를 프리픽스로 붙여 넣는 규약을 둔다. few-shot 예시도 이 규약을 전제로 작성한다 — 이렇게 해야 LLM이 마커를 읽어 `chapter=3`, `story_order=3.0`을 채운다.
+`Event.chapter`(INTEGER)와 `story_order`는 **LLM이 원문만 봐선 알 수 없다**(청크는 순수 텍스트다). 따라서 인덱싱 시 각 청크 앞에 `[3화]` 같은 회차 마커를 프리픽스로 붙여 넣는 규약을 둔다. few-shot 예시도 이 규약을 전제로 작성한다 — 이렇게 해야 LLM이 마커를 읽어 `chapter=3`, `story_order=3.0`을 채운다.
 
 ### few-shot 문자열 (그대로 `examples`로 전달 가능)
 
@@ -437,7 +437,7 @@ class KoreanEmbeddingResolver(BasePropertySimilarityResolver):
 EXTRACTION_FEW_SHOT = r"""
 ### 예시 1
 입력 텍스트:
-【3화】 화산파 대전에 정체불명의 무리가 들이닥쳤다. 젊은 검객 진소천은 이들에 맞서 싸웠으나,
+[3화] 화산파 대전에 정체불명의 무리가 들이닥쳤다. 젊은 검객 진소천은 이들에 맞서 싸웠으나,
 적의 칼에 오른팔이 잘려나갔다. 화산파 대전은 영산 화산의 중턱에 자리 잡고 있었다.
 
 출력 JSON:
@@ -458,7 +458,7 @@ EXTRACTION_FEW_SHOT = r"""
 
 ### 예시 2
 입력 텍스트:
-【7화】 부상에서 회복한 진소천이 낙양성에 도착했다. 잘려나갔던 그의 오른팔에는 정교한 기관 의수가 달려 있었다.
+[7화] 부상에서 회복한 진소천이 낙양성에 도착했다. 잘려나갔던 그의 오른팔에는 정교한 기관 의수가 달려 있었다.
 낙양성은 중원 한복판의 번화한 성이다. 그곳에서 정파의 회합이 열렸다.
 
 출력 JSON:

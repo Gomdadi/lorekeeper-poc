@@ -15,11 +15,11 @@ Neo4j(Community)는 단일 DB만 쓰므로 변형마다 DETACH DELETE로 리셋 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import sys
+import time
 
-from neo4j_graphrag.experimental.components.resolver import (
-    SinglePropertyExactMatchResolver,
-)
 from neo4j_graphrag.experimental.components.text_splitters.fixed_size_splitter import (
     FixedSizeSplitter,
 )
@@ -27,7 +27,11 @@ from neo4j_graphrag.experimental.components.text_splitters.fixed_size_splitter i
 from client import get_driver
 from extraction_examples import EXTRACTION_FEW_SHOT
 from pipeline import build_pipeline
-from resolver import OpenAIEmbeddingResolver
+from resolver import (
+    CombiningExactMatchResolver,
+    CombiningFuzzyResolver,
+    OpenAIEmbeddingResolver,
+)
 from schema import NODE_TYPES, PATTERNS, RELATIONSHIP_TYPES
 from splitters import (
     CHUNK_OVERLAP,
@@ -64,28 +68,28 @@ VARIANTS = [
     {
         "name": "v_baseline",
         "splitter": _make_baseline_splitter,
-        "resolver": lambda driver, db: SinglePropertyExactMatchResolver(
+        "resolver": lambda driver, db: CombiningExactMatchResolver(
             driver=driver, neo4j_database=db
         ),
     },
     {
         "name": "v_recursive",
         "splitter": lambda: ChapterTaggingSplitter(make_recursive_splitter()),
-        "resolver": lambda driver, db: SinglePropertyExactMatchResolver(
+        "resolver": lambda driver, db: CombiningExactMatchResolver(
             driver=driver, neo4j_database=db
         ),
     },
     {
         "name": "v_kiwi",
         "splitter": lambda: ChapterTaggingSplitter(KiwiSentenceSplitter()),
-        "resolver": lambda driver, db: SinglePropertyExactMatchResolver(
+        "resolver": lambda driver, db: CombiningExactMatchResolver(
             driver=driver, neo4j_database=db
         ),
     },
     {
         "name": "v_kss",
         "splitter": lambda: ChapterTaggingSplitter(KSSSentenceSplitter()),
-        "resolver": lambda driver, db: SinglePropertyExactMatchResolver(
+        "resolver": lambda driver, db: CombiningExactMatchResolver(
             driver=driver, neo4j_database=db
         ),
     },
@@ -93,6 +97,21 @@ VARIANTS = [
         "name": "v_resolver_embed",
         "splitter": _make_baseline_splitter,
         "resolver": lambda driver, db: OpenAIEmbeddingResolver(
+            driver=driver, neo4j_database=db
+        ),
+    },
+    {
+        "name": "v_resolver_fuzzy",
+        "splitter": _make_baseline_splitter,
+        "resolver": lambda driver, db: CombiningFuzzyResolver(
+            driver=driver, neo4j_database=db
+        ),
+    },
+    # OFAT 이탈: splitter(kss)와 resolver(fuzzy) 두 "승자 후보"를 결합한 조합 실험.
+    {
+        "name": "v_kss_fuzzy",
+        "splitter": lambda: ChapterTaggingSplitter(KSSSentenceSplitter()),
+        "resolver": lambda driver, db: CombiningFuzzyResolver(
             driver=driver, neo4j_database=db
         ),
     },
@@ -142,11 +161,14 @@ async def run_variant(driver, variant: dict) -> dict:
     name = variant["name"]
     print(f"\n=== {name} 실행 ===")
 
+    # 루프 전체 소요 시간 측정(리셋 + 파이프라인 + 덤프 포함). perf_counter는 벽시계.
+    start = time.perf_counter()
+
     _reset_db(driver)
 
     splitter = variant["splitter"]()
     resolver = variant["resolver"](driver, DATABASE)
-    pipe = build_pipeline(splitter, resolver, driver, DATABASE)
+    pipe, llm = build_pipeline(splitter, resolver, driver, DATABASE)
 
     # SchemaBuilder 컴포넌트에 스키마 목록을, extractor에 few-shot을 run 데이터로 주입한다.
     with open(INPUT_PATH, encoding="utf-8") as f:
@@ -184,9 +206,16 @@ async def run_variant(driver, variant: dict) -> dict:
         "pruned_props": len(pstats.get("pruned_properties", [])),
         "resolve_target": resolver_stats.get("number_of_nodes_to_resolve"),
         "resolve_merged": resolver_stats.get("number_of_created_nodes"),
+        # 추출 LLM 토큰 누적(임베딩 토큰은 별도 API라 미포함). llm 카운터에서 읽는다.
+        "llm_calls": llm.call_count,
+        "tokens_req": llm.total_request_tokens,
+        "tokens_resp": llm.total_response_tokens,
+        "tokens_total": llm.total_tokens,
     }
 
     _dump_graph(driver, name)
+    metrics["elapsed_sec"] = round(time.perf_counter() - start, 1)
+    _write_metrics(name, metrics)
     print(f"    라벨: {metrics['labels']}")
     print(f"    관계: {metrics['rels']}")
     print(
@@ -194,26 +223,58 @@ async def run_variant(driver, variant: dict) -> dict:
         f"{metrics['pruned_rels']}/{metrics['pruned_props']}, "
         f"resolve(대상/병합): {metrics['resolve_target']}/{metrics['resolve_merged']}"
     )
+    print(
+        f"    토큰(req/resp/total): {metrics['tokens_req']}/"
+        f"{metrics['tokens_resp']}/{metrics['tokens_total']} "
+        f"(LLM 호출 {metrics['llm_calls']}회)"
+    )
+    print(f"    소요: {metrics['elapsed_sec']}초")
     print(f"    덤프: output/{name}.cypher")
     return metrics
 
 
-def _write_report(rows: list[dict]) -> None:
-    """변형별 지표를 마크다운 비교표로 저장한다."""
+def _metrics_path(name: str) -> str:
+    return os.path.join(OUTPUT_DIR, f"{name}.metrics.json")
+
+
+def _write_metrics(name: str, metrics: dict) -> None:
+    """변형 지표를 JSON으로 저장한다. 한 변형씩 끊어 실행해도 리포트가 누적되도록."""
+    with open(_metrics_path(name), "w", encoding="utf-8") as f:
+        json.dump(metrics, f, ensure_ascii=False)
+
+
+def _write_report() -> None:
+    """저장된 변형별 지표 JSON을 레지스트리 순서로 모아 마크다운 비교표로 쓴다.
+
+    아직 실행하지 않은 변형(JSON 없음)은 건너뛴다 → 한 변형씩 돌려도 지금까지의
+    결과가 모두 반영된다.
+    """
     lines = [
         "# Indexing 변형 비교 리포트",
         "",
-        "| variant | chunks | 라벨별 노드 | 관계 타입별 | pruned(n/r/p) | resolve(대상/병합) |",
-        "|---|---|---|---|---|---|",
+        "| variant | chunks | 라벨별 노드 | 관계 타입별 | pruned(n/r/p) | resolve(대상/병합) | 토큰(req/resp/total) | 소요(초) |",
+        "|---|---|---|---|---|---|---|---|",
     ]
-    for m in rows:
+    for variant in VARIANTS:
+        path = _metrics_path(variant["name"])
+        if not os.path.exists(path):
+            continue
+        with open(path, encoding="utf-8") as f:
+            m = json.load(f)
         # 라벨/관계는 메타 제외 후 사람이 읽기 좋게 문자열로 편다.
         labels = ", ".join(f"{k}:{v}" for k, v in sorted(m["labels"].items()))
         rels = ", ".join(f"{k}:{v}" for k, v in sorted(m["rels"].items()))
         pruned = f"{m['pruned_nodes']}/{m['pruned_rels']}/{m['pruned_props']}"
         resolve = f"{m['resolve_target']}/{m['resolve_merged']}"
+        # 이전 실행이 남긴 JSON엔 새 필드가 없을 수 있어 방어적으로 조회한다.
+        elapsed = m.get("elapsed_sec", "-")
+        tokens = (
+            f"{m['tokens_req']}/{m['tokens_resp']}/{m['tokens_total']}"
+            if "tokens_total" in m
+            else "-"
+        )
         lines.append(
-            f"| {m['name']} | {m['chunks']} | {labels} | {rels} | {pruned} | {resolve} |"
+            f"| {m['name']} | {m['chunks']} | {labels} | {rels} | {pruned} | {resolve} | {tokens} | {elapsed} |"
         )
     lines.append("")
     with open(REPORT_PATH, "w", encoding="utf-8") as f:
@@ -224,19 +285,29 @@ def _write_report(rows: list[dict]) -> None:
 async def main() -> None:
     if not os.path.exists(INPUT_PATH):
         raise FileNotFoundError(
-            f"입력 텍스트가 없습니다: {INPUT_PATH} — 【N화】 마커를 포함한 원문을 준비하세요."
+            f"입력 텍스트가 없습니다: {INPUT_PATH} — [N화] 마커를 포함한 원문을 준비하세요."
         )
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+    # CLI 인자로 실행할 변형 이름을 받는다(여러 개 가능). 없으면 전체를 순서대로 실행한다.
+    valid = {v["name"] for v in VARIANTS}
+    selected = sys.argv[1:]
+    unknown = [n for n in selected if n not in valid]
+    if unknown:
+        raise SystemExit(
+            f"알 수 없는 변형: {', '.join(unknown)} — "
+            f"가능한 값: {', '.join(v['name'] for v in VARIANTS)}"
+        )
+    targets = [v for v in VARIANTS if not selected or v["name"] in selected]
+
     driver = get_driver()
-    rows = []
     try:
-        for variant in VARIANTS:
-            rows.append(await run_variant(driver, variant))
+        for variant in targets:
+            await run_variant(driver, variant)
     finally:
         driver.close()
 
-    _write_report(rows)
+    _write_report()
 
 
 if __name__ == "__main__":

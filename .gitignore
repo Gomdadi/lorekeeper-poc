@@ -20,3 +20,6 @@ dist/
 
 # OS
 .DS_Store
+
+# 인덱싱 harness 그래프 덤프(재현 가능한 대용량 산출물). 지표(metrics.json)·리포트는 커밋한다.
+poc/output/*.cypher

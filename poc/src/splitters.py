@@ -7,7 +7,7 @@ neo4j-graphrag의 `TextSplitter` 인터페이스(`async def run(self, text) -> T
 - `KiwiSentenceSplitter` : kiwipiepy 형태소 기반 문장 분리
 - `KSSSentenceSplitter`   : KSS(Korean Sentence Splitter) 문장 분리
 - `make_recursive_splitter`: LangChain RecursiveCharacterTextSplitter 어댑터 헬퍼
-- `ChapterTaggingSplitter`: 원문을 `【N화】` 마커 단위로 선분할한 뒤 내부 splitter로 자르고,
+- `ChapterTaggingSplitter`: 원문을 `[N화]` 마커 단위로 선분할한 뒤 내부 splitter로 자르고,
                             모든 청크 앞에 해당 화 마커를 prefix한다. 마커 없는 중간 청크가
                             Event.chapter/story_order를 못 채우는 공백을 막고, 모든 변형에
                             동일 적용되어 OFAT 비교 공정성을 유지한다.
@@ -30,8 +30,8 @@ from neo4j_graphrag.experimental.components.types import TextChunk, TextChunks
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 100
 
-# 챕터 마커 정규식: 【3화】, 【 12 화】 등. 숫자만 회차로 인정한다.
-_CHAPTER_MARKER = re.compile(r"【\s*\d+\s*화\s*】")
+# 챕터 마커 정규식: [3화], [ 12 화] 등. 숫자만 회차로 인정한다.
+_CHAPTER_MARKER = re.compile(r"\[\s*\d+\s*화\s*\]")
 
 
 def make_recursive_splitter() -> LangChainTextSplitterAdapter:
@@ -119,7 +119,10 @@ class KSSSentenceSplitter(TextSplitter):
         self.chunk_overlap = chunk_overlap
 
     async def run(self, text: str) -> TextChunks:
-        sentences = list(self._split(text))
+        # backend='mecab' 명시: 기본값 'auto'는 mecab 미설치 시 순수 파이썬 pecab로
+        # 조용히 폴백해 ~수백배 느려진다. python-mecab-ko를 의존성에 고정해 두었으므로
+        # mecab을 강제한다(설치 안 됐으면 폴백 대신 에러로 드러나게).
+        sentences = list(self._split(text, backend="mecab"))
         pieces = _group_sentences(sentences, self.chunk_size, self.chunk_overlap)
         return TextChunks(
             chunks=[TextChunk(text=p, index=i) for i, p in enumerate(pieces)]
@@ -128,10 +131,10 @@ class KSSSentenceSplitter(TextSplitter):
 
 class ChapterTaggingSplitter(TextSplitter):
     """
-    내부 splitter를 감싸, 청크마다 소속 챕터 마커(【N화】)를 prefix하는 래퍼.
+    내부 splitter를 감싸, 청크마다 소속 챕터 마커([N화])를 prefix하는 래퍼.
 
     동작:
-    1. 원문을 `【N화】` 마커 경계로 (마커, 본문) 세그먼트들로 나눈다.
+    1. 원문을 `[N화]` 마커 경계로 (마커, 본문) 세그먼트들로 나눈다.
     2. 각 세그먼트 본문을 내부 splitter로 자른다(세그먼트가 화 경계를 넘지 않게 됨).
     3. 각 청크 텍스트 앞에 그 화의 마커를 붙이고 전체 index를 다시 매긴다.
 
