@@ -13,12 +13,13 @@ resolver는 데이터 입력이 없으므로 writer→resolver를 빈 input_conf
 
 from __future__ import annotations
 
+import os
+
 import neo4j
 
 from neo4j_graphrag.embeddings import OpenAIEmbeddings
 from neo4j_graphrag.experimental.components.embedder import TextChunkEmbedder
 from neo4j_graphrag.experimental.components.entity_relation_extractor import (
-    LLMEntityRelationExtractor,
     OnError,
 )
 from neo4j_graphrag.experimental.components.graph_pruning import GraphPruning
@@ -29,9 +30,12 @@ from neo4j_graphrag.experimental.components.text_splitters.base import TextSplit
 from neo4j_graphrag.experimental.pipeline import Pipeline
 from neo4j_graphrag.llm import OpenAILLM
 
+from extractor import KoreanWebNovelERTemplate, NovelContextExtractor
+
 # 추출(스키마·그래프)에 쓸 OpenAI 모델. GPT-5 계열이므로 temperature/top_p 등 샘플링
 # 파라미터는 전달하지 않고 모델 기본값을 쓴다(비기본 temperature는 400으로 거부됨).
-EXTRACTION_MODEL = "gpt-5.4-mini"
+# 모델 A/B 테스트를 위해 LOREKEEPER_MODEL 환경변수로 덮어쓸 수 있다(예: gpt-5.6-luna).
+EXTRACTION_MODEL = os.environ.get("LOREKEEPER_MODEL") or "gpt-5.4-mini"
 # 청크 임베딩 모델. retrieval을 아직 안 쓰므로 저비용 모델로 통일.
 EMBEDDING_MODEL = "text-embedding-3-small"
 # 반복 전달되는 프리픽스(스키마+few-shot)의 프롬프트 캐시 라우팅 안정화용 키.
@@ -64,11 +68,17 @@ class TokenCountingLLM(OpenAILLM):
         return resp
 
 
-def build_llm() -> TokenCountingLLM:
-    """추출용 OpenAI LLM 인스턴스. prompt_cache_key를 model_params로 넣어 모든 호출 경로에 전달한다."""
+def build_llm(reasoning_effort: str | None = None) -> TokenCountingLLM:
+    """추출용 OpenAI LLM 인스턴스. prompt_cache_key를 model_params로 넣어 모든 호출 경로에 전달한다.
+
+    reasoning_effort를 주면 model_params에 함께 실어 전달한다(gpt-5 계열 추론 강도 조절).
+    """
+    params = {"prompt_cache_key": PROMPT_CACHE_KEY}
+    if reasoning_effort:
+        params["reasoning_effort"] = reasoning_effort
     return TokenCountingLLM(
         model_name=EXTRACTION_MODEL,
-        model_params={"prompt_cache_key": PROMPT_CACHE_KEY},
+        model_params=params,
     )
 
 
@@ -82,32 +92,46 @@ def build_pipeline(
     resolver: EntityResolver,
     driver: neo4j.Driver,
     database: str,
+    reasoning_effort: str | None = None,
+    novel_context: str = "",
+    clean_db: bool = True,
 ) -> tuple[Pipeline, TokenCountingLLM]:
     """
     변형별 splitter/resolver를 받아 인덱싱 DAG를 조립해 (pipeline, llm)을 반환한다.
 
     llm을 함께 반환하는 이유: 호출측(harness)이 실행 후 llm의 누적 토큰 카운터를 읽어야 한다.
 
+    novel_context: 회차 누적 인덱싱에서 각 청크 프롬프트에 주입할 배경 컨텍스트
+    (그래프 덤프 + rolling summary). 빈 문자열이면 배경 없이 추출한다.
+    clean_db: Neo4jWriter가 쓰기 전에 DB를 비울지 여부. 회차 누적 모드에서는 False로 준다.
+
     schema/extractor는 매 파이프라인마다 새로 만든다(상태 오염 방지).
     스키마 자체(node_types/relationship_types/patterns)는 run 데이터로 주입하므로
     여기서는 SchemaBuilder 컴포넌트만 등록한다.
     """
-    llm = build_llm()
+    llm = build_llm(reasoning_effort)
 
     pipe = Pipeline()
     pipe.add_component(splitter, "splitter")
     pipe.add_component(build_embedder(), "embedder")
     pipe.add_component(SchemaBuilder(), "schema")
     pipe.add_component(
+        # 한국어 웹소설용 커스텀 프롬프트 + novel_context 주입 extractor.
         # V2 structured output 사용(OpenAILLM은 supports_structured_output=True).
         # on_error=RAISE: 한 청크의 추출 실패를 조용히 빈 그래프로 삼키지 않고 드러낸다.
-        LLMEntityRelationExtractor(llm=llm, use_structured_output=True, on_error=OnError.RAISE),
+        NovelContextExtractor(
+            llm=llm,
+            prompt_template=KoreanWebNovelERTemplate(),
+            novel_context=novel_context,
+            use_structured_output=True,
+            on_error=OnError.RAISE,
+        ),
         "extractor",
     )
     pipe.add_component(GraphPruning(), "pruner")
-    # clean_db=True로 쓰기 전에 DB를 비운다(harness에서 별도 리셋도 하지만 안전장치).
+    # clean_db가 True면 쓰기 전에 DB를 비운다(변형 비교 모드). 회차 누적 모드는 False.
     pipe.add_component(
-        Neo4jWriter(driver=driver, neo4j_database=database, clean_db=True), "writer"
+        Neo4jWriter(driver=driver, neo4j_database=database, clean_db=clean_db), "writer"
     )
     pipe.add_component(resolver, "resolver")
 

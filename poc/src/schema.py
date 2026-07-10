@@ -145,9 +145,13 @@ CHARACTER_STATE = NodeType(
     description=(
         "인물의 한 속성(attribute)이 특정 회차부터 갖는 값(value)을 나타내는 사실 노드. "
         "이 노드는 나중에 다른 회차의 내용과 대조해서 모순 여부를 판정해야 할 사실만 담는다 — "
-        "신체 손상, 생사 여부, 소속 변경처럼 시간에 따라 바뀌고 그 변화 자체가 검증 대상이 되는 "
-        "사실만 대상이며, 한 번 정해지면 바뀌지 않는 배경 설정(외형, 성격 등)은 여기 넣지 않고 "
-        "Character.description에 넣는다. "
+        "신체 손상, 생사 여부, 소속 변경, 능력·무공 습득/성장, 소지품 획득/상실처럼 시간에 따라 "
+        "바뀌고 그 변화 자체가 검증 대상이 되는 사실만 대상이며, 한 번 정해지면 바뀌지 않는 "
+        "배경 설정(외형, 성격 등)은 여기 넣지 않고 Character.description에 넣는다. "
+        "인물의 능력(스킬·무공)과 소지품은 별도 노드로 만들지 않고 이 CharacterState의 attribute로 표현한다 "
+        "— 능력/소지품은 인물에 종속된 상태이기 때문이다. "
+        "소지품 소유가 인물 간 이동하면 넘겨준 인물에는 value '상실', 받은 인물에는 value '보유'로 "
+        "각각 별도 CharacterState를 만들어 이동을 표현한다. "
         "같은 attribute에 여러 CharacterState가 쌓일 수 있으며, "
         "ESTABLISHED_IN으로 연결된 Event.chapter가 조회 시점 이하 중 가장 큰 것이 '현재 유효한 값'이다. "
         "상태가 바뀔 때마다 기존 노드를 수정하지 않고 항상 새 CharacterState 노드를 만든다 — "
@@ -158,21 +162,21 @@ CHARACTER_STATE = NodeType(
             name="attribute",
             type="STRING",
             description=(
-                "상태 속성명. 영문 snake_case 식별자로 정규화해서 쓴다(예: right_arm, left_arm, "
-                "status(생사), allegiance). 같은 종류의 상태는 항상 동일한 attribute 값을 써야 한다 — "
-                "예를 들어 생사 여부는 매번 'status'로만 쓰고 '생사여부'나 'alive_or_dead' 같은 "
-                "다른 표현을 새로 만들지 않는다. attribute 값이 회차마다 달라지면 같은 속성의 과거/현재 "
-                "CharacterState들을 시간순으로 비교할 수 없어 이 노드 타입의 존재 목적 자체가 깨진다."
+                "상태 속성명. 한국어로 짧게 쓴다(예: 오른팔, 생사, 소속, 무공, 소지품). 같은 종류의 상태는 "
+                "항상 같은 표현으로 쓴다 — 생사 여부는 매번 '생사'로만 쓰고 '생존여부'나 '사망여부' "
+                "같은 표현을 새로 만들지 않는다. 또한 입도를 통일한다 — '오른팔_부상'/'오른팔_상태'처럼 "
+                "같은 축을 잘게 나누지 말고 '오른팔'처럼 신체 부위·속성 단위로만 쓴다. attribute 표현이나 "
+                "입도가 회차마다 달라지면 같은 속성의 과거/현재 CharacterState들을 시간순으로 비교할 수 "
+                "없어 이 노드 타입의 존재 목적 자체가 깨진다."
             ),
         ),
         PropertyType(
             name="value",
             type="STRING",
             description=(
-                "속성의 현재 값을 짧고 일관된 표현으로 적는다(예: lost, intact, alive, dead). "
-                "attribute와 마찬가지로 같은 의미면 항상 같은 표현을 쓴다 — 사망은 매번 'dead'로만 쓰고 "
-                "'사망함', '죽음', '숨을 거둠' 같은 표현을 섞어 쓰지 않는다. 표현이 섞이면 동일한 상태를 "
-                "비교할 때 서로 다른 값으로 인식되어 조회가 실패한다."
+                "속성의 현재 값을 한국어로 짧게 적는다(예: 상실, 온전함, 생존, 사망). "
+                "서술 문장이 아니라 상태를 나타내는 짧은 표현으로 쓴다 — 자세한 정황은 evidence에 담고, "
+                "여기에는 값만 간결하게 넣는다."
             ),
         ),
         PropertyType(
@@ -188,6 +192,36 @@ CHARACTER_STATE = NodeType(
         # 레트콘 처리는 일단 범위에서 제외 — 우선 상태 조회 구조부터 테스트한 뒤 필요 시 다시 추가
         # PropertyType(name="retconned", type="BOOLEAN", description="레트콘으로 더 이상 유효하지 않게 된 사실이면 true"),
         # PropertyType(name="retcon_note", type="STRING", description="레트콘 사유/정정 내용 메모"),
+    ],
+)
+
+ORGANIZATION = NodeType(
+    label="Organization",
+    additional_properties=False,  # 스키마 미정의 속성 제거 → pruning_stats에 기록
+    description=(
+        "소설에 등장하는 조직·세력·단체 하나(문파, 길드, 가문, 국가 세력 등). "
+        "여러 인물이 소속을 공유하는 엔티티이므로 CharacterState의 문자열 값이 아니라 독립 노드로 둔다 "
+        "— 그래야 '이 조직의 구성원은 누구인가' 같은 조직 단위 조회가 된다. "
+        "인물의 현재 소속은 MEMBER_OF로 연결하고, 소속이 바뀌는 시점 변화는 "
+        "CharacterState(attribute='소속')로 별도 기록한다."
+    ),
+    properties=[
+        PropertyType(
+            name="name",
+            type="STRING",
+            description=(
+                "조직의 정식 명칭. 같은 조직을 가리키는 여러 표현이 등장해도 항상 같은 "
+                "대표 이름 하나로 통일한다 — 값이 달라지면 같은 조직이 여러 노드로 나뉜다."
+            ),
+        ),
+        PropertyType(
+            name="description",
+            type="STRING",
+            description=(
+                "이 조직의 사건과 무관한 일반적 특징(성격/목적/규모 등) 요약. "
+                "시각화 대시보드 표시·RAG 컨텍스트용 참고 정보."
+            ),
+        ),
     ],
 )
 
@@ -241,6 +275,41 @@ LOCATED_IN = RelationshipType(
     ),
 )
 
+MEMBER_OF = RelationshipType(
+    label="MEMBER_OF",
+    description=(
+        "인물이 현재 어느 조직(Organization)에 소속돼 있는지를 나타낸다. "
+        "소속이 언제부터·어떻게 바뀌었는지 같은 시점 변화는 이 관계로 표현하지 않고 "
+        "CharacterState(attribute='소속')로 기록한다 — 이 관계는 현재 확립된 소속 연결만 담는다."
+    ),
+)
+RELATED_TO = RelationshipType(
+    label="RELATED_TO",
+    additional_properties=False,  # 스키마 미정의 속성 제거 → pruning_stats에 기록
+    description=(
+        "인물과 인물 사이의 서사적 관계(동맹, 적대, 사제, 혈연, 연인 등)를 나타낸다. "
+        "관계의 종류는 type 속성에 담는다. 방향은 관계의 주체→대상으로 잡되, "
+        "상호적 관계(동맹 등)는 한 방향만 연결해도 된다. "
+        "관계가 시간에 따라 변하는 것(예: 동맹→적대)까지 시점 추적하려면 이 관계 대신 "
+        "CharacterState로 기록해야 하나, 여기서는 현재 확립된 관계만 담는다."
+    ),
+    properties=[
+        PropertyType(
+            name="type",
+            type="STRING",
+            description=(
+                "관계의 종류를 한국어로 짧게 쓴다(예: 동맹, 적대, 사제, 혈연, 연인). "
+                "같은 종류는 항상 같은 표현으로 통일한다."
+            ),
+        ),
+        PropertyType(
+            name="description",
+            type="STRING",
+            description="이 관계에 대한 짧은 부연(예: '어린 시절 같은 스승 밑에서 수학'). 없으면 생략 가능.",
+        ),
+    ],
+)
+
 # --- 허용 관계 패턴 ---
 
 PATTERNS = [
@@ -250,6 +319,8 @@ PATTERNS = [
     ("CharacterState", "ESTABLISHED_IN", "Event"),
     # ("CharacterState", "REFERENCED_IN", "Event"),  # 레트콘 제외 범위 — 위 REFERENCED_IN 주석과 함께 배제
     ("Location", "LOCATED_IN", "Location"),
+    ("Character", "MEMBER_OF", "Organization"),
+    ("Character", "RELATED_TO", "Character"),
 ]
 
 # --- 스키마 조립 ---
@@ -257,10 +328,11 @@ PATTERNS = [
 # 커스텀 파이프라인의 SchemaBuilder 컴포넌트(run 데이터)에서 재사용할 수 있도록
 # 노드/관계 타입 목록을 모듈 변수로 노출한다. SchemaBuilder.run()은 node_types/
 # relationship_types/patterns를 인자로 받으므로 조립된 SCHEMA가 아니라 이 목록들을 넘긴다.
-NODE_TYPES = [CHARACTER, LOCATION, EVENT, CHARACTER_STATE]
+NODE_TYPES = [CHARACTER, LOCATION, EVENT, CHARACTER_STATE, ORGANIZATION]
 RELATIONSHIP_TYPES = [
     APPEARS_IN, HOSTS,
     HAS_STATE, ESTABLISHED_IN, LOCATED_IN,  # REFERENCED_IN은 레트콘 제외 범위라 배제
+    MEMBER_OF, RELATED_TO,
 ]
 
 SCHEMA: GraphSchema = SchemaBuilder.create_schema_model(

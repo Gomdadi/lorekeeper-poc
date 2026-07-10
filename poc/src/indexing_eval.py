@@ -47,7 +47,10 @@ DATABASE = os.environ.get("NEO4J_DATABASE", "neo4j")
 
 # 경로: 이 파일 기준 상대 경로로 입력/출력 위치를 잡는다.
 _SRC_DIR = os.path.dirname(os.path.abspath(__file__))
-INPUT_PATH = os.path.join(_SRC_DIR, "..", "data", "input.txt")
+# 입력 텍스트 경로. LOREKEEPER_INPUT 환경변수로 덮어쓸 수 있다(특정 회차만 돌려볼 때).
+INPUT_PATH = os.environ.get("LOREKEEPER_INPUT") or os.path.join(
+    _SRC_DIR, "..", "data", "input.txt"
+)
 OUTPUT_DIR = os.path.join(_SRC_DIR, "..", "output")
 REPORT_PATH = os.path.join(OUTPUT_DIR, "report.md")
 
@@ -115,6 +118,51 @@ VARIANTS = [
             driver=driver, neo4j_database=db
         ),
     },
+    # 회차 통째 = 청크 하나. ChapterTaggingSplitter가 [N화]로 선분할하므로, 내부
+    # FixedSizeSplitter의 chunk_size를 가장 긴 회차(측정상 ~7천 자)보다 크게 잡으면
+    # 각 회차 본문이 하위 분할 없이 통째로 한 청크가 된다. 회차 내 coreference를
+    # 한 컨텍스트에서 해소해 노드 분열을 줄이는 게 목적. resolver는 best-fit의 fuzzy 유지.
+    {
+        "name": "v_chapter",
+        "splitter": lambda: ChapterTaggingSplitter(
+            FixedSizeSplitter(chunk_size=12000, chunk_overlap=0)
+        ),
+        "resolver": lambda driver, db: CombiningFuzzyResolver(
+            driver=driver, neo4j_database=db
+        ),
+    },
+    # v_chapter와 splitter/resolver는 동일하고 reasoning_effort만 올린 두 변형(OFAT).
+    # 추론 강도가 현저 특성·핵심 사물·복선 포착을 개선하는지 확인용.
+    {
+        "name": "v_chapter_medium",
+        "splitter": lambda: ChapterTaggingSplitter(
+            FixedSizeSplitter(chunk_size=12000, chunk_overlap=0)
+        ),
+        "resolver": lambda driver, db: CombiningFuzzyResolver(
+            driver=driver, neo4j_database=db
+        ),
+        "reasoning_effort": "medium",
+    },
+    {
+        "name": "v_chapter_high",
+        "splitter": lambda: ChapterTaggingSplitter(
+            FixedSizeSplitter(chunk_size=12000, chunk_overlap=0)
+        ),
+        "resolver": lambda driver, db: CombiningFuzzyResolver(
+            driver=driver, neo4j_database=db
+        ),
+        "reasoning_effort": "high",
+    },
+    {
+        "name": "v_chapter_xhigh",
+        "splitter": lambda: ChapterTaggingSplitter(
+            FixedSizeSplitter(chunk_size=12000, chunk_overlap=0)
+        ),
+        "resolver": lambda driver, db: CombiningFuzzyResolver(
+            driver=driver, neo4j_database=db
+        ),
+        "reasoning_effort": "xhigh",
+    },
 ]
 
 
@@ -168,7 +216,9 @@ async def run_variant(driver, variant: dict) -> dict:
 
     splitter = variant["splitter"]()
     resolver = variant["resolver"](driver, DATABASE)
-    pipe, llm = build_pipeline(splitter, resolver, driver, DATABASE)
+    pipe, llm = build_pipeline(
+        splitter, resolver, driver, DATABASE, variant.get("reasoning_effort")
+    )
 
     # SchemaBuilder 컴포넌트에 스키마 목록을, extractor에 few-shot을 run 데이터로 주입한다.
     with open(INPUT_PATH, encoding="utf-8") as f:

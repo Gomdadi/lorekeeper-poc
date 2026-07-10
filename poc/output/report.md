@@ -9,3 +9,7 @@
 | v_resolver_embed | 37 | Character:34, CharacterState:47, Chunk:37, Event:50, Location:14 | APPEARS_IN:125, ESTABLISHED_IN:47, FROM_CHUNK:224, HAS_STATE:47, HOSTS:24, LOCATED_IN:4, NEXT_CHUNK:36 | 0/3/0 | 127/17 | 178765/15645/194410 | 54.2 |
 | v_resolver_fuzzy | 37 | Character:29, CharacterState:47, Chunk:37, Event:55, Location:9 | APPEARS_IN:130, ESTABLISHED_IN:47, FROM_CHUNK:234, HAS_STATE:45, HOSTS:19, LOCATED_IN:3, NEXT_CHUNK:36 | 0/9/0 | 132/17 | 178765/16290/195055 | 36.2 |
 | v_kss_fuzzy | 33 | Character:28, CharacterState:35, Chunk:33, Event:46, Location:12 | APPEARS_IN:116, ESTABLISHED_IN:35, FROM_CHUNK:200, HAS_STATE:34, HOSTS:14, LOCATED_IN:6, NEXT_CHUNK:32 | 0/6/0 | 120/17 | 161141/13948/175089 | 38.1 |
+| v_chapter | 1 | Character:2, Chunk:1, Event:3 | APPEARS_IN:6, FROM_CHUNK:5 | 0/0/0 | 2/0 | 6055/426/6481 | 10.7 |
+| v_chapter_medium | 1 | Character:2, Chunk:1, Event:2 | APPEARS_IN:3, FROM_CHUNK:4 | 0/0/0 | 2/0 | 6055/855/6910 | 10.4 |
+| v_chapter_high | 2 | Character:3, CharacterState:1, Chunk:2, Event:7, Location:1 | APPEARS_IN:11, ESTABLISHED_IN:1, FROM_CHUNK:13, HAS_STATE:1, HOSTS:3, NEXT_CHUNK:1 | 0/0/0 | 5/1 | 13351/12938/26289 | 59.6 |
+| v_chapter_xhigh | 1 | Character:2, Chunk:1, Event:3, Location:2 | APPEARS_IN:4, FROM_CHUNK:7, HOSTS:3, LOCATED_IN:1 | 0/0/0 | 4/0 | 6055/46606/52661 | 293.8 |
