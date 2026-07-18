@@ -2,52 +2,21 @@
 TextSplitter 후보 모음.
 
 neo4j-graphrag의 `TextSplitter` 인터페이스(`async def run(self, text) -> TextChunks`)를
-구현하는 한국어용 커스텀 스플리터와, 챕터 마커를 청크에 주입하는 래퍼를 정의한다.
+구현하는 한국어용 커스텀 스플리터를 정의한다.
 
 - `KiwiSentenceSplitter` : kiwipiepy 형태소 기반 문장 분리
 - `KSSSentenceSplitter`   : KSS(Korean Sentence Splitter) 문장 분리
-- `make_recursive_splitter`: LangChain RecursiveCharacterTextSplitter 어댑터 헬퍼
-- `ChapterTaggingSplitter`: 원문을 `[N화]` 마커 단위로 선분할한 뒤 내부 splitter로 자르고,
-                            모든 청크 앞에 해당 화 마커를 prefix한다. 마커 없는 중간 청크가
-                            Event.chapter/story_order를 못 채우는 공백을 막고, 모든 변형에
-                            동일 적용되어 OFAT 비교 공정성을 유지한다.
-
-FixedSizeSplitter는 라이브러리 기본 컴포넌트를 그대로 쓰므로 여기 정의하지 않는다.
+- `WholeTextSplitter`     : 원고 전체를 자르지 않고 1개 청크로 내보냄(회차=단일 추출 청크)
 """
 
 from __future__ import annotations
 
-import re
-
 from neo4j_graphrag.experimental.components.text_splitters.base import TextSplitter
-from neo4j_graphrag.experimental.components.text_splitters.langchain import (
-    LangChainTextSplitterAdapter,
-)
 from neo4j_graphrag.experimental.components.types import TextChunk, TextChunks
 
-# 모든 splitter가 공유하는 목표 청크 크기(글자 수)와 겹침.
-# 값을 통일해야 "경계 전략의 차이"만 비교되고 "청크 크기의 차이"가 섞이지 않는다.
+# 문장 분리 splitter가 공유하는 목표 청크 크기(글자 수)와 겹침.
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 100
-
-# 챕터 마커 정규식: [3화], [ 12 화] 등. 숫자만 회차로 인정한다.
-_CHAPTER_MARKER = re.compile(r"\[\s*\d+\s*화\s*\]")
-
-
-def make_recursive_splitter() -> LangChainTextSplitterAdapter:
-    """
-    LangChain RecursiveCharacterTextSplitter를 라이브러리 어댑터로 감싼 인스턴스를 만든다.
-    구분자 우선순위(문단→줄→공백)로 자르므로 언어 무관하게 문장 잘림을 줄인다.
-    """
-    # 지연 import: langchain-text-splitters 미설치 환경에서 모듈 로드 자체가 실패하지 않도록.
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-    return LangChainTextSplitterAdapter(
-        RecursiveCharacterTextSplitter(
-            chunk_size=CHUNK_SIZE,
-            chunk_overlap=CHUNK_OVERLAP,
-        )
-    )
 
 
 def _group_sentences(
@@ -129,51 +98,13 @@ class KSSSentenceSplitter(TextSplitter):
         )
 
 
-class ChapterTaggingSplitter(TextSplitter):
+class WholeTextSplitter(TextSplitter):
+    """원고 전체를 자르지 않고 1개 청크로 내보내는 splitter.
+
+    회차 1개 = 추출 청크 1개 전제(회차 내 coreference를 한 컨텍스트에서 해소)에서 쓴다.
+    [chapter:N]·[C{i}] 마커가 인라인으로 박힌 회차 원고를 그대로 한 청크로 넘겨,
+    회차 크기와 무관하게 하위 분할 없이 통째로 추출되게 한다.
     """
-    내부 splitter를 감싸, 청크마다 소속 챕터 마커([N화])를 prefix하는 래퍼.
-
-    동작:
-    1. 원문을 `[N화]` 마커 경계로 (마커, 본문) 세그먼트들로 나눈다.
-    2. 각 세그먼트 본문을 내부 splitter로 자른다(세그먼트가 화 경계를 넘지 않게 됨).
-    3. 각 청크 텍스트 앞에 그 화의 마커를 붙이고 전체 index를 다시 매긴다.
-
-    첫 마커 이전의 도입부처럼 마커가 없는 세그먼트는 prefix 없이 그대로 둔다.
-    """
-
-    def __init__(self, inner: TextSplitter):
-        self.inner = inner
-
-    @staticmethod
-    def _segments(text: str) -> list[tuple[str | None, str]]:
-        """
-        원문을 (마커 or None, 본문) 튜플 목록으로 분해한다.
-        마커는 다음 마커가 나오기 전까지의 본문에 적용된다.
-        """
-        segments: list[tuple[str | None, str]] = []
-        last_end = 0
-        current_marker: str | None = None
-        for m in _CHAPTER_MARKER.finditer(text):
-            # 직전 마커 위치부터 이번 마커 시작까지가 current_marker의 본문이다.
-            body = text[last_end:m.start()]
-            if body.strip():
-                segments.append((current_marker, body))
-            current_marker = m.group().strip()
-            last_end = m.end()
-        # 마지막 마커 이후의 꼬리 본문.
-        tail = text[last_end:]
-        if tail.strip():
-            segments.append((current_marker, tail))
-        return segments
 
     async def run(self, text: str) -> TextChunks:
-        all_chunks: list[TextChunk] = []
-        index = 0
-        for marker, body in self._segments(text):
-            sub = await self.inner.run(body)
-            for chunk in sub.chunks:
-                # 마커가 있으면 청크 맨 앞에 붙여 LLM이 회차를 인지하게 한다.
-                tagged = f"{marker}\n{chunk.text}" if marker else chunk.text
-                all_chunks.append(TextChunk(text=tagged, index=index))
-                index += 1
-        return TextChunks(chunks=all_chunks)
+        return TextChunks(chunks=[TextChunk(text=text, index=0)])

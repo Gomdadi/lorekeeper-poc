@@ -32,10 +32,10 @@ from neo4j_graphrag.llm import OpenAILLM
 
 from extractor import KoreanWebNovelERTemplate, NovelContextExtractor
 
-# 추출(스키마·그래프)에 쓸 OpenAI 모델. GPT-5 계열이므로 temperature/top_p 등 샘플링
-# 파라미터는 전달하지 않고 모델 기본값을 쓴다(비기본 temperature는 400으로 거부됨).
-# 모델 A/B 테스트를 위해 LOREKEEPER_MODEL 환경변수로 덮어쓸 수 있다(예: gpt-5.6-luna).
-EXTRACTION_MODEL = os.environ.get("LOREKEEPER_MODEL") or "gpt-5.4-mini"
+# 추출(스키마·그래프)에 쓸 OpenAI 모델. 기본값 gpt-5.6-luna. GPT-5 계열이므로 temperature/top_p 등
+# 샘플링 파라미터는 전달하지 않고 모델 기본값을 쓴다(비기본 temperature는 400으로 거부됨).
+# 필요 시 LOREKEEPER_MODEL 환경변수로 덮어쓸 수 있다.
+EXTRACTION_MODEL = os.environ.get("LOREKEEPER_MODEL") or "gpt-5.6-luna"
 # 청크 임베딩 모델. retrieval을 아직 안 쓰므로 저비용 모델로 통일.
 EMBEDDING_MODEL = "text-embedding-3-small"
 # 반복 전달되는 프리픽스(스키마+few-shot)의 프롬프트 캐시 라우팅 안정화용 키.
@@ -113,17 +113,21 @@ def build_pipeline(
 
     pipe = Pipeline()
     pipe.add_component(splitter, "splitter")
-    pipe.add_component(build_embedder(), "embedder")
+    # embedder는 DAG에서 뺐다: 회차 통째를 임베딩할 필요가 없고(coarse Chunk 제거),
+    # 근거·벡터RAG용 임베딩은 indexing의 별도 Chunk 레이어가 KSS 조각 단위로 만든다.
     pipe.add_component(SchemaBuilder(), "schema")
     pipe.add_component(
         # 한국어 웹소설용 커스텀 프롬프트 + novel_context 주입 extractor.
         # V2 structured output 사용(OpenAILLM은 supports_structured_output=True).
         # on_error=RAISE: 한 청크의 추출 실패를 조용히 빈 그래프로 삼키지 않고 드러낸다.
+        # create_lexical_graph=False: 라이브러리 자동 lexical graph(회차 통째 Chunk +
+        # FROM_CHUNK + 임베딩)를 끈다 — Chunk 노드는 indexing의 KSS 근거 레이어가 전담한다.
         NovelContextExtractor(
             llm=llm,
             prompt_template=KoreanWebNovelERTemplate(),
             novel_context=novel_context,
             use_structured_output=True,
+            create_lexical_graph=False,
             on_error=OnError.RAISE,
         ),
         "extractor",
@@ -136,8 +140,8 @@ def build_pipeline(
     pipe.add_component(resolver, "resolver")
 
     # 데이터 흐름 배선 (하위 입력 파라미터 ← 상위 출력 필드)
-    pipe.connect("splitter", "embedder", {"text_chunks": "splitter"})
-    pipe.connect("embedder", "extractor", {"chunks": "embedder"})
+    # embedder 제거로 splitter가 extractor의 chunks에 직접 연결된다.
+    pipe.connect("splitter", "extractor", {"chunks": "splitter"})
     pipe.connect("schema", "extractor", {"schema": "schema"})
     pipe.connect("schema", "pruner", {"schema": "schema"})
     pipe.connect("extractor", "pruner", {"graph": "extractor"})
