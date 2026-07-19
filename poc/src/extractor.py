@@ -111,6 +111,15 @@ class KoreanWebNovelERTemplate(ERExtractionTemplate):
 - evidence_chunk: 각 Event·CharacterState에, 그 사실을 뒷받침하는 원문 문장이 있는 청크 번호를
   채운다(예: "C3", 여럿이면 "C3,C4"). 실제 그 문장이 있는 청크만.
 
+--- 유효한 JSON 생성 규칙 ---
+- JSON 외의 부가 설명·문장을 함께 반환하지 말라(JSON만 출력).
+- JSON을 backtick(```)으로 감싸지 말라.
+- 전체를 list로 감싸지 말라 — 최상위는 nodes/relationships를 가진 하나의 JSON 객체다.
+- property 이름은 반드시 큰따옴표로 감싼다.
+
+예시:
+{examples}
+
 --- 지금까지의 배경 컨텍스트(참고용) ---
 아래는 이전 회차까지의 그래프 덤프와 줄거리 요약이다(첫 회차면 비어 있으니 무시).
 - 별칭 정합: 이번 회차의 대상이 다른 호칭으로 불려도, 배경 그래프에 같은 대상이 있으면 그 name을
@@ -120,15 +129,6 @@ class KoreanWebNovelERTemplate(ERExtractionTemplate):
   같은 사실을 회차마다 중복 생성하지 말고, 값이 실제로 바뀔 때만 새 노드를 낸다.
 - 충돌 시 새 회차 원문을 우선한다 — 배경에 맞추려 사실을 왜곡하지 말 것(모순은 그대로 둬야 나중에 탐지된다).
 {novel_context}
-
---- 유효한 JSON 생성 규칙 ---
-- JSON 외의 부가 설명·문장을 함께 반환하지 말라(JSON만 출력).
-- JSON을 backtick(```)으로 감싸지 말라.
-- 전체를 list로 감싸지 말라 — 최상위는 nodes/relationships를 가진 하나의 JSON 객체다.
-- property 이름은 반드시 큰따옴표로 감싼다.
-
-예시:
-{examples}
 
 입력 텍스트:
 
