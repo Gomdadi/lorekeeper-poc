@@ -1,8 +1,8 @@
 """
 회차 누적 인덱싱 진입점 함수 (컴포넌트).
 
-`indexing(chapter, text)` 한 번 호출 = 한 회차 인덱싱. DB를 리셋하지 않고(clean_db=False)
-이전 회차까지 누적된 결과 위에 새 회차를 얹는다. 두 개의 병렬 산출을 만든다.
+`indexing(chapter, text)` 한 번 호출 = 한 회차 인덱싱. 이전 회차까지 누적된 결과 위에 새 회차를
+얹는다(Neo4jWriter는 upsert만 하고 기존 데이터를 지우지 않는다). 두 개의 병렬 산출을 만든다.
 
   1. 추출(KG): 회차 원고 전체를 단일 청크로 넣어(WholeTextSplitter) Character/Event/CharacterState
      등 도메인 그래프를 추출한다. 회차 내 coreference를 한 컨텍스트에서 해소하기 위함.
@@ -134,7 +134,7 @@ async def indexing(
             database,
             reasoning_effort=reasoning,
             novel_context=context,
-            clean_db=False,
+            clean_db=True,
         )
         data = {
             "splitter": {"text": marked},

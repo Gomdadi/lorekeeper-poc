@@ -30,10 +30,12 @@ from neo4j_graphrag.experimental.components.types import ResolutionStats
 
 # 병합 시 속성 처리 전략(APOC apoc.refactor.mergeNodes의 properties 옵션).
 # 라이브러리 기본값은 'discard'라 충돌 속성이 조용히 유실된다. 여기서는 속성별 맵으로
-# 바꿔 description은 값이 다르면 배열로 '합치고'(combine → 유실 방지), 나머지 속성은
+# 바꿔 description·aliases는 값이 다르면 배열로 '합치고'(combine → 유실 방지), 나머지 속성은
 # 첫 노드 값을 유지한다(백틱 `.*`는 나머지 전체를 매칭하는 catch-all 정규식).
-# 주의: description이 배열이 될 수 있어 스칼라 스키마와 어긋난다(유실 방지를 위한 의도적 트레이드오프).
-_MERGE_PROPS = "{description:'combine', `.*`:'discard'}"
+# aliases를 combine에 넣는 이유: 같은 인물이 여러 노드로 갈렸다 병합될 때 한쪽 별칭이
+# catch-all에 걸려 사라지면, 다음 회차에서 그 호칭을 같은 인물로 잇는 단서를 잃는다.
+# 주의: 두 속성이 배열이 될 수 있어 스칼라 스키마와 어긋난다(유실 방지를 위한 의도적 트레이드오프).
+_MERGE_PROPS = "{description:'combine', aliases:'combine', `.*`:'discard'}"
 
 
 async def _run_combining_similarity(r: BasePropertySimilarityResolver) -> ResolutionStats:

@@ -28,21 +28,28 @@ def _node_display(labels: list[str], props: dict) -> tuple[str, str]:
     # 메타/lexical을 뺀 도메인 라벨(보통 1개).
     domain_labels = [lab for lab in labels if lab not in _EXCLUDED_LABELS]
     label = domain_labels[0] if domain_labels else "Node"
-    # 대표 이름: name → title → attribute=value 순으로 고른다.
+    # 대표 이름: name → title → state 순으로 고른다.
+    # CharacterState는 name/title이 없고 state 하나로 상태를 서술하므로 그것이 대표 이름이 된다.
     if props.get("name"):
         key = str(props["name"])
     elif props.get("title"):
         key = str(props["title"])
-    elif props.get("attribute"):
-        key = f"{props['attribute']}={props.get('value', '')}"
+    elif props.get("state"):
+        key = str(props["state"])
     else:
         key = "?"
     ref = f"{label}:{key}"
-    # 상세: 대표 이름 외 나머지 속성을 짧게 덧붙인다.
+    # 상세: 대표 이름 외 나머지 속성을 짧게 덧붙인다. 제외 대상이 둘 있다.
+    #  - evidence(원문 인용): 덤프의 목적은 엔티티 식별·구조 신호이고 근거 문장은
+    #    EVIDENCED_BY→Chunk가 담당한다. 인용문까지 실으면 입력 토큰만 크게 늘어난다.
+    #  - `__`로 시작하는 속성: neo4j-graphrag가 노드에 남기는 내부 식별자(__tmp_internal_id 등).
+    #    LLM에게는 의미 없는 UUID라 노드마다 수십 자씩 노이즈가 쌓인다.
     extras = {
         k: v
         for k, v in props.items()
-        if k not in ("name", "title") and v not in (None, "")
+        if k not in ("name", "title", "state", "evidence")
+        and not k.startswith("__")
+        and v not in (None, "")
     }
     extra_str = ", ".join(f"{k}={v}" for k, v in extras.items())
     detail = f"- ({label}) {key}" + (f" — {extra_str}" if extra_str else "")
@@ -129,13 +136,24 @@ def build_context(graph_dump: str, summaries: str) -> str:
 async def summarize_episode(text: str) -> str:
     """이 회차 원고를 3~5문장으로 요약한다. build_llm('high')로 추론 강도를 높여 인과·복선을 반영."""
     llm = build_llm("high")
+    # 이 요약은 Chapter.summary에 저장돼 '다음 회차 추출의 배경 컨텍스트'로 주입된다.
+    # 따라서 요약의 오류는 이후 회차 추출로 그대로 전파된다 — 정확성이 간결함보다 우선이다.
+    # 실제로 1화(없는 관계 창작)·2화(다른 작품과 혼동) 환각이 오염원이 된 사례가 있어
+    # 아래 지시를 명시적으로 넣는다.
     system = (
         "당신은 웹소설 편집자다. 회차 원고를 읽고 이후 회차와 대조할 때 도움이 되도록 "
-        "핵심 서사를 간결히 요약한다."
+        "핵심 서사를 간결히 요약한다. 이 요약은 다음 회차를 읽을 때 배경 지식으로 쓰이므로, "
+        "틀린 내용이 들어가면 이후 회차 해석까지 오염된다. 간결함보다 정확성이 우선이다."
     )
     user = (
         "다음 회차 원고를 3~5문장의 한국어로 요약하라. 등장인물, 주요 사건, 인물의 상태 변화"
         "(부상·생사·소속·능력·소지품)와 새로 드러난 관계를 중심으로 쓴다.\n\n"
+        "지켜야 할 것:\n"
+        "- 원문에 서술된 사실만 쓴다. 해석·추정·평가를 덧붙이지 않는다.\n"
+        "- 원문에 나오지 않은 인물 사이의 관계·감정을 만들어 내지 않는다"
+        "(원문이 부정적으로 그린 관계를 호의적으로 바꿔 쓰는 것도 안 된다).\n"
+        "- 고유명(인물·작품·조직·장소)은 원문 표기 그대로 쓴다. 여러 작품·인물이 언급되면 "
+        "각각을 구분하고, 어느 것인지 확실하지 않으면 아예 언급하지 않는다.\n\n"
         f"{text}"
     )
     resp = await llm.ainvoke(user, system_instruction=system)
