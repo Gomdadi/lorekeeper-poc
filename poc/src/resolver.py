@@ -1,16 +1,22 @@
 """
 커스텀 Entity Resolver 모음.
 
-harness가 비교하는 resolver 3종:
+병합 방식이 다른 building block resolver 3종(매칭 전략만 다르고 combine 병합 흐름은 공유):
 - CombiningExactMatchResolver : 이름 완전일치(라이브러리 exact-match 기반) + combine 병합
 - OpenAIEmbeddingResolver     : 이름 임베딩 코사인 유사도 + combine 병합
 - CombiningFuzzyResolver      : 이름 문자열 유사도(RapidFuzz WRatio) + combine 병합
+그리고 정규화 exact 변형 NormalizedExactMatchResolver.
 
 세 resolver 모두 병합 시 description을 배열로 합쳐(combine) 유실을 막는다. 라이브러리 기본
 병합 전략은 properties:'discard'라 충돌 속성이 유실되는데, 병합 config가 run()에 하드코딩돼
 훅이 없으므로 run()을 우리가 정의한다. 유사도 계열 두 resolver(임베딩·fuzzy)는 매칭 방식만
 다르고 나머지 흐름(라벨별 그룹화 → 쌍별 유사도 → mergeNodes)이 동일하므로, 그 본문을
 _run_combining_similarity() 헬퍼로 한 번만 두고 compute_similarity만 각자 오버라이드한다.
+
+실제 인덱싱은 이들을 라벨(node type)별로 조립한 PerLabelResolver를 쓴다: name의 성격이 라벨마다
+달라 병합 방식을 달리한다(Character=fuzzy, Item/Location/Organization=정규화 exact,
+CharacterState/Event=무병합). 병합으로 description이 배열이 되면 collapse_merged_descriptions가
+LLM으로 한 문자열로 합친다.
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ import numpy as np
 from neo4j_graphrag.embeddings import OpenAIEmbeddings
 from neo4j_graphrag.experimental.components.resolver import (
     BasePropertySimilarityResolver,
+    EntityResolver,
     SinglePropertyExactMatchResolver,
 )
 from neo4j_graphrag.experimental.components.types import ResolutionStats
@@ -36,6 +43,17 @@ from neo4j_graphrag.experimental.components.types import ResolutionStats
 # catch-all에 걸려 사라지면, 다음 회차에서 그 호칭을 같은 인물로 잇는 단서를 잃는다.
 # 주의: 두 속성이 배열이 될 수 있어 스칼라 스키마와 어긋난다(유실 방지를 위한 의도적 트레이드오프).
 _MERGE_PROPS = "{description:'combine', aliases:'combine', `.*`:'discard'}"
+
+# 아래 모든 mergeNodes 호출은 produceSelfRel:false를 함께 준다. 병합되는 두 노드 사이에 관계가
+# 있으면 기본값(true)은 그 관계를 병합 노드의 self-loop로 남긴다 — 예: 같은 이름의 '지하철 3807칸'
+# 두 노드 중 하나가 다른 하나를 LOCATED_IN하다 병합되면 자기 자신을 가리키는 LOCATED_IN이 생긴다.
+# false로 주면 그런 관계를 self-loop로 만들지 않고 버려 self-loop 생성을 원천 차단한다.
+
+# 정규화 exact-match(NormalizedExactMatchResolver)가 그룹핑 전에 name에서 제거할 문자.
+# 공백·꺾쇠·따옴표·괄호류만 지워 표기 흔들림('탑의 문'↔'탑의문'↔'<탑의 문>')을 흡수한다.
+# 숫자·문자는 보존하므로 '지하철 3807칸'≠'지하철 3907칸'은 여전히 분리된다. 한글엔 대소문자가
+# 없어 toLower는 쓰지 않는다. APOC apoc.text.replace에 넘길 Java 정규식 char class다.
+_NORMALIZE_REGEX = "[\\s<>《》「」『』【】()\\[\\]“”‘’\"']"
 
 
 async def _run_combining_similarity(r: BasePropertySimilarityResolver) -> ResolutionStats:
@@ -96,7 +114,7 @@ async def _run_combining_similarity(r: BasePropertySimilarityResolver) -> Resolu
                     "WITH collect(n) AS nodes "
                     "CALL apoc.refactor.mergeNodes(nodes, {properties: "
                     + _MERGE_PROPS
-                    + ", mergeRels: true}) "
+                    + ", mergeRels: true, produceSelfRel: false}) "
                     "YIELD node RETURN elementId(node)"
                 )
                 result, _, _ = r.driver.execute_query(
@@ -202,12 +220,66 @@ class CombiningExactMatchResolver(SinglePropertyExactMatchResolver):
             "WITH prop, lab, collect(entity) AS entities "
             "CALL apoc.refactor.mergeNodes(entities,{ properties:"
             + _MERGE_PROPS
-            + ", mergeRels:true }) "
+            + ", mergeRels:true, produceSelfRel:false }) "
             "YIELD node "
             "RETURN count(node) as c "
         )
         records, _, _ = self.driver.execute_query(
             merge_nodes_query, database_=self.neo4j_database
+        )
+        number_of_created_nodes = records[0].get("c")
+        return ResolutionStats(
+            number_of_nodes_to_resolve=number_of_nodes_to_resolve,
+            number_of_created_nodes=number_of_created_nodes,
+        )
+
+
+class NormalizedExactMatchResolver(CombiningExactMatchResolver):
+    """
+    정규화한 이름의 완전일치로 병합하는 exact-match resolver.
+
+    CombiningExactMatchResolver와 병합 흐름은 같되, 그룹핑 키를 name 원본이 아니라 정규화한
+    문자열(_NORMALIZE_REGEX로 공백·괄호·따옴표류 제거)로 삼는다. 덕분에 표기 흔들림
+    ('탑의 문'↔'탑의문'↔'<탑의 문>')은 같은 그룹으로 병합되지만, 숫자·문자는 보존돼
+    '지하철 3807칸'≠'지하철 3907칸'은 분리된다. 정규화 문자열은 그룹핑에만 쓰고 저장하지 않으므로,
+    병합 후 남는 name은 첫 노드의 원본 표기다(_MERGE_PROPS의 catch-all discard).
+
+    Item/Location/Organization처럼 이름이 정준 식별자인 라벨에 쓴다.
+
+    병합 config가 라이브러리 run()에 하드코딩돼 훅이 없으므로, CombiningExactMatchResolver.run()
+    본문을 복사하고 그룹핑 키 한 줄만 정규화로 교체했다.
+    """
+
+    async def run(self) -> ResolutionStats:
+        match_query = "MATCH (entity:__Entity__) "
+        if self.filter_query:
+            match_query += self.filter_query
+        # 먼저 해소 대상 노드 수를 센다(0이면 조기 반환).
+        stat_query = f"{match_query} RETURN count(entity) as c"
+        records, _, _ = self.driver.execute_query(
+            stat_query, database_=self.neo4j_database
+        )
+        number_of_nodes_to_resolve = records[0].get("c")
+        if number_of_nodes_to_resolve == 0:
+            return ResolutionStats(number_of_nodes_to_resolve=0)
+        # 같은 라벨 + 정규화한 name이 같은 노드끼리 묶어 한 노드로 병합한다. 그룹핑 키만
+        # apoc.text.replace로 정규화하고(정규식은 $norm 파라미터로 주입), 정규화 결과가 빈
+        # 문자열이 되는 노드(전부 기호)는 제외한다.
+        merge_nodes_query = (
+            f"{match_query} "
+            f"WITH entity, apoc.text.replace(entity.{self.resolve_property}, $norm, '') as prop "
+            "WITH entity, prop WHERE prop IS NOT NULL AND prop <> '' "
+            "UNWIND labels(entity) as lab  "
+            "WITH lab, prop, entity WHERE NOT lab IN ['__Entity__', '__KGBuilder__'] "
+            "WITH prop, lab, collect(entity) AS entities "
+            "CALL apoc.refactor.mergeNodes(entities,{ properties:"
+            + _MERGE_PROPS
+            + ", mergeRels:true, produceSelfRel:false }) "
+            "YIELD node "
+            "RETURN count(node) as c "
+        )
+        records, _, _ = self.driver.execute_query(
+            merge_nodes_query, {"norm": _NORMALIZE_REGEX}, database_=self.neo4j_database
         )
         number_of_created_nodes = records[0].get("c")
         return ResolutionStats(
@@ -255,3 +327,106 @@ class CombiningFuzzyResolver(BasePropertySimilarityResolver):
 
         # WRatio는 0~100 점수. 임계값과 맞추기 위해 0~1로 정규화한다.
         return fuzz.WRatio(text_a, text_b) / 100.0
+
+
+class PerLabelResolver(EntityResolver):
+    """
+    라벨(node type)별로 서로 다른 병합 전략을 순차 적용하는 조립 resolver.
+
+    name의 성격이 라벨마다 달라 병합 방식을 달리한다.
+      - Character                  : 이름 표기변형 coref → fuzzy(WRatio)
+      - Item/Location/Organization : 정준 이름 → 정규화 exact-match(표기 흔들림 흡수, 숫자 오병합 0)
+      - CharacterState/Event       : name이 서술형이라 어떤 유사도도 위험(숫자·부위 차이를 뭉갬)
+                                     → 어느 스코프에도 넣지 않아 무병합. evidence를 가진 라벨이
+                                       이 둘뿐이라, 병합을 안 하면 근거 소실 경로 자체가 사라진다.
+
+    각 sub-resolver는 filter_query(Cypher WHERE)로 자기 라벨만 대상으로 좁힌다. 라벨이 상호
+    배타적이라 실행 순서는 무관하다.
+    """
+
+    def __init__(
+        self,
+        driver: neo4j.Driver,
+        neo4j_database: Optional[str] = None,
+    ) -> None:
+        # 베이스는 driver/filter_query만 받는다. 라벨 스코핑은 각 sub-resolver의 filter_query가 한다.
+        super().__init__(driver=driver)
+        self.neo4j_database = neo4j_database
+        self._resolvers = [
+            CombiningFuzzyResolver(
+                driver=driver,
+                filter_query="WHERE entity:Character",
+                neo4j_database=neo4j_database,
+            ),
+            NormalizedExactMatchResolver(
+                driver=driver,
+                filter_query="WHERE entity:Item OR entity:Location OR entity:Organization",
+                neo4j_database=neo4j_database,
+            ),
+        ]
+
+    async def run(self) -> ResolutionStats:
+        # ComponentMeta가 이 클래스에 직접 정의된 run을 요구한다. 각 sub-resolver를 순차 실행하고
+        # 해소 대상·생성 노드 수를 합산해 반환한다(누적 로그용).
+        total_to_resolve = 0
+        total_created = 0
+        for resolver in self._resolvers:
+            stats = await resolver.run()
+            total_to_resolve += stats.number_of_nodes_to_resolve or 0
+            total_created += stats.number_of_created_nodes or 0
+        return ResolutionStats(
+            number_of_nodes_to_resolve=total_to_resolve,
+            number_of_created_nodes=total_created,
+        )
+
+
+async def collapse_merged_descriptions(driver: neo4j.Driver, database: str) -> None:
+    """
+    병합으로 배열이 된 description을 LLM으로 한 문자열로 합쳐 되돌린다.
+
+    _MERGE_PROPS의 description:'combine'는 서로 다른 서술이 병합될 때 description을 배열로 만든다
+    (값이 같으면 스칼라로 남아 대상이 아니다). 이 배열을 build_llm('high')로 한 서술로 합친다.
+    resolver·link_evidence 뒤(indexing 오케스트레이션)에서 회차마다 한 번 호출한다. 합친 결과는
+    문자열이라 다음 회차엔 다시 대상이 되지 않는다(멱등).
+
+    병합이 일어나는 라벨은 Character/Item/Location/Organization뿐이고, 이들의 description은
+    evidence_chunk에 앵커되지 않은 참고용 서술이라 원문 없이 서술만으로 합쳐도 된다. 다만 합치는
+    과정에서 지어내지 않도록 프롬프트에 '입력에 있는 내용만·모순 병기' 제약을 건다.
+    """
+    from pipeline import build_llm  # 지연 import: 순환 방지 + collapse 시에만 필요
+
+    # description이 STRING이 아닌(= 배열로 combine된) 노드만 고른다.
+    records, _, _ = driver.execute_query(
+        """
+        MATCH (n)
+        WHERE n.description IS NOT NULL AND NOT n.description IS :: STRING
+        RETURN elementId(n) AS id, n.name AS name, n.description AS descs
+        """,
+        database_=database,
+    )
+    if not records:
+        return
+    llm = build_llm("high")
+    for r in records:
+        merged = await _collapse_descriptions_llm(llm, r["name"], list(r["descs"]))
+        driver.execute_query(
+            "MATCH (n) WHERE elementId(n) = $id SET n.description = $d",
+            {"id": r["id"], "d": merged},
+            database_=database,
+        )
+
+
+async def _collapse_descriptions_llm(llm, name: str, descs: List[str]) -> str:
+    """여러 서술(descs)을 name을 가리키는 하나의 한국어 서술로 합친다(없는 내용 창작 금지)."""
+    system = "당신은 여러 서술을 하나로 합치는 편집자다. 입력 서술에 실제로 있는 내용만 쓴다."
+    joined = "\n".join(f"- {d}" for d in descs)
+    user = (
+        f"다음은 같은 대상('{name}')을 가리키는 여러 서술이다. 하나의 한국어 서술로 합쳐라.\n"
+        "규칙:\n"
+        "- 입력 서술에 실제로 있는 내용만 쓴다. 새 사실·인과·감정·배경을 덧붙이지 않는다.\n"
+        "- 서로 모순되면 하나를 고르거나 화해시키지 말고 둘 다 보존해 병기한다.\n"
+        "- 같은 내용은 한 번만 쓴다.\n\n"
+        f"서술들:\n{joined}"
+    )
+    resp = await llm.ainvoke(user, system_instruction=system)
+    return resp.content.strip()

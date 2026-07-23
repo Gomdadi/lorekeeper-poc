@@ -7,10 +7,15 @@ KG 스키마 정의 모듈.
   - 대상 지시: 소유·소속·역할처럼 대상이 있는 상태는 ABOUT으로 그 노드를 직접 가리킨다
                (문자열이 아닌 그래프 노드로 식별해 '이 사물의 현재 소유자' 같은 조회를 가능케 함)
   - 시간·공간 구조: Event.chapter / story_order, Location의 LOCATED_IN 계층
-  - 근거(provenance): evidence(원문 인용) + evidence_chunk → EVIDENCED_BY(아래 별도 주석 참고)
+  - 근거(provenance): evidence_chunk → EVIDENCED_BY(아래 별도 주석 참고)
 
 조회는 vector RAG로 찾은 노드에서 n-hop 확장해 컨텍스트를 모으고 판단은 LLM이 하는 구조를
 전제한다. 따라서 각 노드는 '그 노드만 읽어도 무슨 사실인지 알 수 있게' 자기서술적이어야 한다.
+
+모든 도메인 노드는 name(무엇인지 식별하는 자기서술적 구)과 description(name이 압축하며 버린
+정황을, 근거 청크 원문에 기대어 복원한 서술)을 공통으로 가진다 — 타입별 특수 서술 속성
+(title/state/evidence)을 두지 않는다. 원문 근거는 evidence_chunk→EVIDENCED_BY→Chunk 링크가
+전담하므로 노드에 원문을 축자 인용해 중복 보관하지 않는다.
 """
 
 from neo4j_graphrag.experimental.components.schema import (
@@ -59,7 +64,8 @@ CHARACTER = NodeType(
             type="STRING",
             description=(
                 "이 인물이 어떤 인물인지 설명하는 자연어 서술(외형/성격/이력 등). 참고·RAG용이며 "
-                "CharacterState 등 노드/관계와 내용이 겹쳐도 무방하다. "
+                "CharacterState 등 노드/관계와 내용이 겹쳐도 무방하다. 원문에 근거해 쓰고 추론·평가를 "
+                "덧붙이지 않는다. "
                 "구조로 표현 가능한 사실은 여기에만 두지 말고 반드시 해당 노드/관계로도 만든다. "
                 "이력 추적 대상이 아니며 덮어쓰기 가능."
             ),
@@ -86,6 +92,7 @@ LOCATION = NodeType(
             type="STRING",
             description=(
                 "장소의 사건과 무관한 일반 특징(지형/분위기/역할). 특정 사건 전개는 여기 적지 말고 Event로 분리한다. "
+                "원문에 근거해 쓰고 추론·평가를 덧붙이지 않는다. "
                 "구조로 표현 가능한 사실은 여기에만 두지 말고 반드시 해당 노드/관계로도 만든다."
             ),
         ),
@@ -101,12 +108,25 @@ EVENT = NodeType(
     ),
     properties=[
         PropertyType(
-            name="title",
+            name="name",
             type="STRING",
             description=(
-                "사건 식별용 짧은 제목. 이 사건에 대한 유일한 서술 속성이므로, 제목만 읽어도 무엇이 일어났는지 "
-                "알 수 있을 만큼 구체적으로 쓴다('사고' 같은 막연한 제목 금지). 같은 사건이 여러 청크에 걸쳐 "
-                "언급되면 하나의 Event로 낸다."
+                "사건을 한 구절로 식별하는 자기서술적 제목. 이 줄만 읽어도 무엇이 일어났는지 알 수 있게 쓰되"
+                "('사고' 같은 막연한 제목 금지), 정황·경위·정도는 description이 담당하므로 서술을 제목에 "
+                "몰아넣지 않는다. evidence_chunk가 가리키는 원문 범위 안에서만 쓴다 — 원문이 명시하지 않은 "
+                "결과(사망·성공·실패)나 인과(누가 누구를 죽였는지)를 단정하지 않고, 원문이 진행 중이면 진행 "
+                "중으로 쓴다. 같은 사건이 여러 청크에 걸쳐 언급되면 하나의 Event로 낸다."
+            ),
+        ),
+        PropertyType(
+            name="description",
+            type="STRING",
+            description=(
+                "name이 압축하며 버린 정황을 복원한다 — 누가 관여했는지, 어떤 계기로, 어느 정도로, 어떤 "
+                "순서로, 원문이 결과를 어디까지 서술했는지. 모든 Event에 채운다. evidence_chunk가 가리키는 "
+                "청크의 원문에 근거해 쓰고, 그 청크에 없는 인과·동기·감정은 지어내지 않는다. 고유명·수치·호칭은 "
+                "원문 표기 그대로 쓴다. name을 어미만 바꿔 되풀이하면 이 속성은 쓰지 않은 것과 같다 — 덧붙일 "
+                "정황이 원문에 없으면 근거 문장을 풀어 쓰는 데서 그친다(짧은 서술이 지어낸 서술보다 낫다)."
             ),
         ),
         PropertyType(
@@ -126,20 +146,12 @@ EVENT = NodeType(
             ),
         ),
         PropertyType(
-            name="evidence",
-            type="STRING",
-            description=(
-                "이 사건의 근거가 되는 원문 문장을 그대로/가깝게 인용한다(해석·설명·요약을 덧붙이지 않음). "
-                "모든 Event에 채운다. 사건의 부가 정보는 이 인용으로 보존한다 — 직접 서술하면 사실이 왜곡되고, "
-                "구조로 표현해야 할 것을 서술로 때우게 된다."
-            ),
-        ),
-        PropertyType(
             name="evidence_chunk",
             type="STRING",
             description=(
-                "이 사건의 근거 원문 문장이 있는 청크 번호(예: 'C3', 여럿이면 'C3,C4'). 실제 그 문장이 있는 "
-                "청크만 쓰고 추측하지 않는다. 후처리에서 EVIDENCED_BY 관계로 바뀌고 노드에서 제거된다."
+                "이 사건의 근거가 되는 원문이 있는 청크 번호(예: 'C3', 여럿이면 'C3,C4'). 실제 그 원문이 있는 "
+                "청크만 쓰고 추측하지 않는다. description은 이 청크의 원문에만 근거해야 하므로 실제 근거 청크를 "
+                "빠짐없이 적는다. 후처리에서 EVIDENCED_BY 관계로 바뀌고 노드에서 제거된다."
             ),
         ),
     ],
@@ -165,28 +177,36 @@ CHARACTER_STATE = NodeType(
     ),
     properties=[
         PropertyType(
-            name="state",
+            name="name",
             type="STRING",
             description=(
                 "이 인물에 관한 사실·상태를 그 자체로 읽히게 서술한다(예: '어깨를 칼날에 깊게 베임', "
                 "'대한물산 인사팀에 계약직으로 소속', '코인 6200 보유', '탑의 문의 유일한 독자', "
                 "'스물여덟 살', '청일고교 2학년'). "
                 "원문 문장을 그대로 옮기지 말고 상태로 압축하되, 무엇에 관한 상태인지 알 수 있을 만큼 "
-                "구체적으로 쓴다 — 이 노드만 따로 읽혔을 때도 뜻이 통해야 한다(원문 인용은 evidence가 담당). "
+                "구체적으로 쓴다 — 이 노드만 따로 읽혔을 때도 뜻이 통해야 한다(성립 정황은 description이 담당). "
                 "대상이 있는 상태는 그 대상 노드를 ABOUT으로 함께 잇는다."
             ),
         ),
         PropertyType(
-            name="evidence",
+            name="description",
             type="STRING",
-            description="이 상태를 뒷받침하는 원문 문장을 그대로/가깝게 인용한다(해석·설명을 덧붙이지 않음). 판정 근거용.",
+            description=(
+                "name이 압축하며 버린 성립 정황을 복원한다 — 어떤 계기로, 누구를 통해, 어느 정도로 그 상태가 "
+                "성립했는지. 모든 CharacterState에 채운다. evidence_chunk가 가리키는 청크의 원문에 근거해 쓰고, "
+                "그 청크에 없는 인과·동기는 지어내지 않는다. 고유명·수치·호칭은 원문 표기 그대로 쓴다. name을 "
+                "어미만 바꿔 되풀이하면 이 속성은 쓰지 않은 것과 같다 — 덧붙일 정황이 원문에 없으면 근거 문장을 "
+                "풀어 쓰는 데서 그친다(짧은 서술이 지어낸 서술보다 낫다). 한 근거 문장에서 여러 상태를 뽑았다면 "
+                "각 description은 그 상태에 해당하는 부분에만 초점을 맞춘다(같은 서술을 여러 노드에 복사하지 않는다)."
+            ),
         ),
         PropertyType(
             name="evidence_chunk",
             type="STRING",
             description=(
-                "이 상태의 근거 원문 문장이 있는 청크 번호(예: 'C3', 여럿이면 'C3,C4'). 실제 그 문장이 있는 "
-                "청크만 쓰고 추측하지 않는다. 후처리에서 EVIDENCED_BY 관계로 바뀌고 노드에서 제거된다."
+                "이 상태의 근거가 되는 원문이 있는 청크 번호(예: 'C3', 여럿이면 'C3,C4'). 실제 그 원문이 있는 "
+                "청크만 쓰고 추측하지 않는다. description은 이 청크의 원문에만 근거해야 하므로 실제 근거 청크를 "
+                "빠짐없이 적는다. 후처리에서 EVIDENCED_BY 관계로 바뀌고 노드에서 제거된다."
             ),
         ),
     ],
@@ -198,7 +218,8 @@ ORGANIZATION = NodeType(
     description=(
         "조직·세력·단체(문파·길드·가문·회사·부서 등). 여러 인물이 공유하는 엔티티라 문자열이 아닌 독립 노드로 "
         "둔다('이 조직의 구성원은 누구인가' 조회를 위해). 인물 소속은 CharacterState를 만들어 ABOUT으로 이 조직에 "
-        "잇고, '현재 소속'은 가장 나중에 성립한 상태에서 파생한다."
+        "잇고, '현재 소속'은 가장 나중에 성립한 상태에서 파생한다. 부서·지부처럼 더 큰 조직의 일부인 조직은 "
+        "PART_OF로 상위 조직을 한 단계씩 잇는다(부서→회사, 건너뛰기 금지). 상위 조직이 원문에 없으면 노드만 만들어도 된다."
     ),
     properties=[
         PropertyType(
@@ -210,7 +231,8 @@ ORGANIZATION = NodeType(
             name="description",
             type="STRING",
             description=(
-                "조직의 사건과 무관한 일반 특징(성격/목적/규모 등) 요약. 참고·RAG용. "
+                "조직의 사건과 무관한 일반 특징(성격/목적/규모 등) 요약. 참고·RAG용. 원문에 근거해 쓰고 "
+                "추론·평가를 덧붙이지 않는다. "
                 "구조로 표현 가능한 사실은 여기에만 두지 말고 반드시 해당 노드/관계로도 만든다."
             ),
         ),
@@ -241,7 +263,8 @@ ITEM = NodeType(
             name="description",
             type="STRING",
             description=(
-                "사물의 비시간적 특징(종류/유래/용도/저작 배경 등) 요약. 참고·RAG용. "
+                "사물의 비시간적 특징(종류/유래/용도/저작 배경 등) 요약. 참고·RAG용. 원문에 근거해 쓰고 "
+                "추론·평가를 덧붙이지 않는다. "
                 "구조로 표현 가능한 사실은 여기에만 두지 말고 반드시 해당 노드/관계로도 만든다"
                 "(소유자·저자 등은 CharacterState가 담당)."
             ),
@@ -274,6 +297,13 @@ ESTABLISHED_IN = RelationshipType(
 LOCATED_IN = RelationshipType(
     label="LOCATED_IN",
     description="장소가 한 단계 위 장소를 가리킴(요새→도시→왕국). 단계를 건너뛰지 않는다(계층을 순회로 복원하기 위해).",
+)
+PART_OF = RelationshipType(
+    label="PART_OF",
+    description=(
+        "조직이 한 단계 위 상위 조직을 가리킴(부서→회사, 지부→본부, 계열사→그룹). LOCATED_IN의 조직판이며 "
+        "단계를 건너뛰지 않는다(계층을 순회로 복원하기 위해). 상위 조직이 원문에 없으면 노드만 만들어도 된다."
+    ),
 )
 
 RELATED_TO = RelationshipType(
@@ -325,6 +355,7 @@ PATTERNS = [
     ("Character", "HAS_STATE", "CharacterState"),
     ("CharacterState", "ESTABLISHED_IN", "Event"),
     ("Location", "LOCATED_IN", "Location"),
+    ("Organization", "PART_OF", "Organization"),
     ("Character", "RELATED_TO", "Character"),
     ("CharacterState", "ABOUT", "Item"),             # 소유·역할(저자/독자/제작자) 대상
     ("CharacterState", "ABOUT", "Organization"),     # 소속 대상
@@ -336,7 +367,7 @@ PATTERNS = [
 
 NODE_TYPES = [CHARACTER, LOCATION, EVENT, CHARACTER_STATE, ORGANIZATION, ITEM]
 RELATIONSHIP_TYPES = [
-    APPEARS_IN, HOSTS, HAS_STATE, ESTABLISHED_IN, LOCATED_IN,
+    APPEARS_IN, HOSTS, HAS_STATE, ESTABLISHED_IN, LOCATED_IN, PART_OF,
     RELATED_TO, ABOUT,
 ]
 

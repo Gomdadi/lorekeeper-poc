@@ -137,7 +137,8 @@ def build_pipeline(
     pipe.add_component(GraphPruning(), "pruner")
     # clean_db=True면 쓰기 직후 __tmp_internal_id(관계 배선용 임시 id)를 노드에서 지운다.
     # 이 속성을 남기면 그래프 덤프(context.dump_graph_text)로 새어 나가 배경 컨텍스트가
-    # UUID로 오염되므로 항상 켜 둔다. resolver는 name/elementId로만 매칭하고 evidence.py는
+    # UUID로 오염되므로 항상 켜 둔다. resolver는 name/elementId로만 매칭하고(이번 개편으로
+    # Event/CharacterState도 name을 가져 resolver 매칭 대상에 들어온다) evidence.py는
     # evidence_chunk만 쓰므로, 이 시점에 지워도 이후 단계에 영향이 없다.
     pipe.add_component(
         Neo4jWriter(driver=driver, neo4j_database=database, clean_db=clean_db), "writer"

@@ -9,8 +9,8 @@
   2. 근거·벡터(Chunk): 같은 원고를 KSS로 잘게 쪼개 Chunk 노드로 저장하고 text-embedding-3-small로
      임베딩한다. 추출된 Event/CharacterState는 근거 문장이 속한 Chunk를 evidence_chunk 번호로
      가리키며, 후처리(evidence.link_evidence)가 이를 EVIDENCED_BY 관계로 잇는다. 회차는 Chapter
-     노드로 승격하고 각 Chunk를 IN_CHAPTER로 잇는다. rolling summary는 Chapter.summary 노드
-     property로 누적한다.
+     노드로 승격하고 각 Chunk를 IN_CHAPTER로 잇는다. 요약은 두 층으로 관리한다 — 회차별
+     Chapter.summary(원천)와, 매 회차 일정 크기로 갱신되는 전역 Story.summary(컨텍스트 주입용).
 
 배경 컨텍스트(novel_context) 조립과 회차 요약은 context.py, 근거 링크는 evidence.py로 분리했고,
 이 모듈은 그 컴포넌트들을 순서대로 엮는 오케스트레이터다. '새 회차 우선' 지침으로 anchoring을
@@ -19,7 +19,7 @@
 실행(CLI):
     cd poc && LOREKEEPER_CHAPTER=1 LOREKEEPER_INPUT=data/input_ch1.txt uv run python src/indexing.py
 프로그램적 호출:
-    await indexing(1, text, driver)
+    await indexing(1, text)
 """
 
 from __future__ import annotations
@@ -32,13 +32,14 @@ from client import get_driver
 from context import (
     build_context,
     dump_graph_text,
-    load_chapter_summaries,
+    load_summaries,
     summarize_episode,
+    update_global_summary,
 )
 from evidence import link_evidence
 from extraction_examples import EXTRACTION_FEW_SHOT
 from pipeline import build_pipeline
-from resolver import CombiningFuzzyResolver
+from resolver import PerLabelResolver, collapse_merged_descriptions
 from schema import NODE_TYPES, PATTERNS, RELATIONSHIP_TYPES
 from splitters import KSSSentenceSplitter, WholeTextSplitter
 
@@ -79,41 +80,36 @@ def _rel_counts(driver, database: str) -> dict[str, int]:
     return {r["t"]: r["cnt"] for r in records}
 
 
-async def indexing(
-    chapter: int,
-    text: str,
-    driver=None,
-    *,
-    database: str = DATABASE,
-    reasoning: str | None = _EXTRACT_REASONING,
-    kss_chunk_size: int = DEFAULT_KSS_CHUNK_SIZE,
-) -> dict:
+async def indexing(chapter: int, text: str) -> dict:
     """
     한 회차를 누적 인덱싱한다.
 
     chapter: 회차 번호(정수). Event.chapter·Chapter.number·Chunk.chapter의 근거가 된다.
     text: 회차 원고 전체.
-    driver: 재사용할 Neo4j 드라이버. None이면 이 함수가 열고 닫는다.
     반환: 라벨/관계 카운트·토큰·요약을 담은 dict.
+
+    드라이버·DB·reasoning·청크 크기는 파라미터가 아니라 모듈 상수를 쓴다
+    (DATABASE / _EXTRACT_REASONING / DEFAULT_KSS_CHUNK_SIZE). 드라이버는 이 함수가 열고 닫는다.
     """
-    own_driver = driver is None
-    if own_driver:
-        driver = get_driver()
+    database = DATABASE
+    driver = get_driver()
     try:
-        # 1. 배경 컨텍스트(현재 그래프 덤프 + 이전 회차 요약) 조합.
+        # 1. 배경 컨텍스트(전역 줄거리 요약 + 최근 회차 요약 + 그래프 덤프) 조합.
+        #    덤프의 Event/CharacterState는 이름·구조 정보만 실린다(description 제외).
         graph_dump = dump_graph_text(driver, database)
-        summaries = load_chapter_summaries(driver, database)
-        context = build_context(graph_dump, summaries)
+        global_summary, recent_summaries = load_summaries(driver, database)
+        context = build_context(graph_dump, global_summary, recent_summaries)
         print(
             f"배경 컨텍스트 길이: {len(context)}자 "
-            f"(그래프 {len(graph_dump)}자 + 요약 {len(summaries)}자)"
+            f"(그래프 {len(graph_dump)}자 + 전역 요약 {len(global_summary)}자 "
+            f"+ 최근 요약 {len(recent_summaries)}자)"
         )
 
         # 2. 근거·벡터용 KSS 청킹. raw.chunks는 (a)Chunk 레이어 생성과 (b)추출 마커 조립에
         #    함께 쓰이므로 여기서 한 번만 쪼갠다. overlap=0: 겹침이 있으면 경계 문장이 인접
         #    두 [C{i}] 마커에 중복 노출돼 LLM의 evidence_chunk 번호 선택이 모호해지므로 끈다.
         raw = await KSSSentenceSplitter(
-            chunk_size=kss_chunk_size, chunk_overlap=0
+            chunk_size=DEFAULT_KSS_CHUNK_SIZE, chunk_overlap=0
         ).run(text)
 
         # 3. Chunk/Chapter provenance 레이어 생성(Chunk 노드·임베딩·NEXT_CHUNK + Chapter +
@@ -126,13 +122,14 @@ async def indexing(
             f"[C{c.index}] {c.text}" for c in raw.chunks
         )
 
-        # 5. 추출 파이프라인 실행(회차 통째 단일 청크, DB 누적). resolver는 best-fit인 fuzzy.
+        # 5. 추출 파이프라인 실행(회차 통째 단일 청크, DB 누적). resolver는 라벨별 전략
+        #    (Character=fuzzy / Item·Location·Organization=정규화 exact / CharacterState·Event=무병합).
         pipe, llm = build_pipeline(
             WholeTextSplitter(),
-            CombiningFuzzyResolver(driver=driver, neo4j_database=database),
+            PerLabelResolver(driver=driver, neo4j_database=database),
             driver,
             database,
-            reasoning_effort=reasoning,
+            reasoning_effort=_EXTRACT_REASONING,
             novel_context=context,
             clean_db=True,
         )
@@ -150,15 +147,21 @@ async def indexing(
         # 6. evidence_chunk 번호 → EVIDENCED_BY 관계(resolver 뒤).
         link_evidence(driver, database, chapter)
 
-        # 7. 이 회차 요약 생성 → Chapter.summary에 저장(다음 회차 컨텍스트로 재사용).
+        # 7. 병합으로 배열이 된 description을 LLM으로 한 문자열로 합친다(resolver 뒤, evidence 라벨은
+        #    병합되지 않으므로 link_evidence와 순서 무관).
+        await collapse_merged_descriptions(driver, database)
+
+        # 8. 이 회차 요약 생성 → Chapter.summary에 저장(전역 요약의 입력이자 drift 시 재구축 원천).
         summary = await summarize_episode(text)
         driver.execute_query(
             "MATCH (c:Chapter {number: $chapter}) SET c.summary = $summary",
             {"chapter": chapter, "summary": summary},
             database_=database,
         )
+        # 이어서 전역 줄거리 요약(Story.summary)을 일정 크기로 갱신하고 Chapter를 Story에 잇는다.
+        await update_global_summary(driver, database, chapter, summary)
 
-        # 8. 결과 요약(누적된 전체 DB 기준).
+        # 9. 결과 요약(누적된 전체 DB 기준).
         labels = _label_counts(driver, database)
         rels = _rel_counts(driver, database)
         print(f"\n=== {chapter}화 인덱싱 완료 (누적) ===")
@@ -182,8 +185,7 @@ async def indexing(
             "summary": summary,
         }
     finally:
-        if own_driver:
-            driver.close()
+        driver.close()
 
 
 if __name__ == "__main__":
