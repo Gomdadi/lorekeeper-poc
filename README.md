@@ -1,5 +1,96 @@
 # LoreKeeper — 웹소설 지식그래프 인덱싱 PoC
 
+## Getting Started (import & 호출)
+
+이 저장소를 **다른 프로젝트에서 라이브러리로** 가져다 쓰는 방법. 이 프로젝트는 인덱싱 진입점과 프레임워크 중립 검색(retrieval) 도구를 `lorekeeper` 패키지의 공개 API로 노출한다. 오케스트레이션(LangGraph 배선·충돌 판정 등)은 import하는 쪽의 몫이다.
+
+### 1. 설치
+
+```bash
+git clone <this-repo>
+cd lorekeeper-poc/poc
+pip install -e .        # 또는: uv pip install -e .
+```
+
+설치하면 소비 프로젝트에서 내부 모듈 경로를 몰라도 다음처럼 import 할 수 있다.
+
+```python
+from lorekeeper import (
+    indexing,
+    build_retrievers,
+    build_retrieval_tools,
+)
+```
+
+### 2. 필수 환경변수
+
+Neo4j 접속과 OpenAI 호출에 필요한 값을 **레포 루트의 `.env`** 로 관리한다(코드가 `load_dotenv()`로 로드). OpenAI 키는 `openai` 라이브러리가 `OPENAI_API_KEY`를 **내부적으로** 읽으므로 환경에만 있으면 된다.
+
+| 변수 | 용도 | 기본값 | 필수 |
+|---|---|---|---|
+| `NEO4J_URI` | Neo4j Bolt 접속 URI (예: `bolt://localhost:7687`) | 없음 | ✅ |
+| `NEO4J_USER` | Neo4j 사용자 | 없음 | ✅ |
+| `NEO4J_PASSWORD` | Neo4j 비밀번호 | 없음 | ✅ |
+| `OPENAI_API_KEY` | OpenAI API 키 — 추출·요약 LLM 및 임베딩 호출에 사용 | 없음 | ✅ |
+| `NEO4J_DATABASE` | 사용할 Neo4j DB 이름 | `neo4j` | 선택 |
+| `LOREKEEPER_MODEL` | 추출/요약 LLM 모델 | `gpt-5.6-luna` | 선택 |
+| `LOREKEEPER_REASONING` | 추출 reasoning effort (`low`/`medium`/`high`/`xhigh`) | `high` | 선택 |
+
+> `LOREKEEPER_CHAPTER` / `LOREKEEPER_INPUT`은 CLI 실행(`python src/indexing.py`)의 회차·입력 경로 지정 전용이다. `indexing(chapter, text)`를 프로그램적으로 호출할 때는 필요 없다. 임베딩 모델(`text-embedding-3-small`, 1536차원)은 환경변수가 아니라 코드 상수다.
+
+`.env` 예시:
+
+```dotenv
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=lorekeeper
+OPENAI_API_KEY=sk-...
+```
+
+### 3. 인덱싱 호출 (원고 → KG)
+
+`indexing`은 **async 함수**다. 한 번 호출 = 한 회차 누적 인덱싱.
+
+```python
+import asyncio
+from lorekeeper import indexing
+
+text = open("data/input_ch1.txt", encoding="utf-8").read()
+asyncio.run(indexing(1, text))          # 1화를 KG로 인덱싱
+```
+
+### 4. 검색 호출 (KG → LLM-ready 텍스트)
+
+```python
+from lorekeeper import build_retrievers, build_retrieval_tools
+
+# 검색 인덱스(벡터·풀텍스트 cjk)는 indexing()이 자동 생성한다 → 인덱싱한 DB면 바로 검색 가능(별도 준비 불필요).
+
+# (a) retriever를 직접 .search() 로 호출
+retrievers = build_retrievers()          # dict[str, Retriever]
+result = retrievers["vector_cypher"].search("김남운이 다친 사건", top_k=5)
+for item in result.items:
+    print(item.content)                  # LLM 프롬프트에 그대로 넣을 수 있는 자족적 텍스트
+
+# (b) 에이전트(LangGraph 등)에 붙일 Tool 리스트
+tools = build_retrieval_tools()          # list[neo4j_graphrag.tool.Tool] — 프레임워크 중립
+```
+
+- 검색 인덱스(벡터 `chunk_emb` · 풀텍스트 `chunk_text_ft`, cjk analyzer)는 `indexing()`이 자동으로 만들고 이후 회차 데이터를 자동 색인한다. **소비 쪽이 검색 전에 인덱스를 따로 준비할 필요가 없다.**
+- `build_retrievers()` — 이름→`Retriever` 딕셔너리. `.search()`를 직접 부를 때 사용.
+- `build_retrieval_tools()` — 같은 검색기를 `neo4j_graphrag.tool.Tool`로 감싼 리스트. 어떤 에이전트 프레임워크에든 배선할 수 있다.
+
+### 5. 검색 도구 4종
+
+| 도구 | 설명 |
+|---|---|
+| `vector_cypher` | 의미 유사(벡터) 검색으로 Chunk를 찾고 `EVIDENCED_BY` 등으로 그래프를 확장해 관련 서브그래프까지 함께 반환 |
+| `hybrid_cypher` | 벡터 + 풀텍스트 하이브리드 검색 + 그래프 확장. 풀텍스트는 cjk analyzer(한국어/CJK 토큰화) |
+| `entity_state_history` | 특정 인물의 시점별 상태 타임라인 조회. 인자: `entity_name`, `up_to_chapter` |
+| `text2cypher` | 자연어 질문을 Cypher로 변환해 실행 — 집계·개방형 구조 질의에 사용 |
+
+---
+
 한국어 웹소설 원고를 회차 단위로 읽어 **Neo4j 지식그래프(KG)**로 구축하는 인덱싱 파이프라인 PoC.
 최종 목표는 "새 회차가 기존 세계관 설정과 충돌하는지 탐지"하는 것이며, 이 저장소는 그 **인덱싱 계층**(원고 → KG)을 설계·검증한다.
 
@@ -102,10 +193,63 @@ indexing(chapter, text)              ← 진입점 함수 (poc/src/indexing.py)
 ### 벡터 RAG (Neo4j 네이티브)
 
 - `Chunk.embedding`에 벡터 인덱스 `chunk_emb`(cosine, HNSW)를 건다 → 별도 벡터 DB 없이 Neo4j 하나로 검색.
-- 검색 계층은 `VectorCypherRetriever`로 **벡터 검색 → 그래프 확장**을 단일 쿼리로 수행한다(설계 목표, 이 저장소 범위 밖):
+- 검색 계층은 `VectorCypherRetriever`/`HybridCypherRetriever`로 **벡터/하이브리드 검색 → 그래프 확장**을 단일 쿼리로 수행한다(아래 **검색 (Querying) 계층**에서 구현):
   ```
-  벡터로 Chunk를 찾고 → (Chunk)<-[:EVIDENCED_BY]-(Event) 앵커 → 1-hop으로 Character/CharacterState 확장
+  벡터로 Chunk를 찾고 → (Chunk)<-[:EVIDENCED_BY]-(Event|CharacterState) 앵커 → 1-hop 이웃 서브그래프 확장
   ```
+
+---
+
+## 검색 (Querying) 계층 (`poc/src/retrieval.py`)
+
+인덱싱으로 쌓인 KG를 조회하는 **프레임워크 중립 retriever 도구**를 제공한다. 라우팅·답변 생성·충돌 판정 같은 오케스트레이션은 소비 프로젝트(LangGraph 등)의 몫이고, 이 계층은 "검색"까지만 책임진다. 도구는 `build_retrieval_tools()`(→ `neo4j_graphrag.tool.Tool` 리스트, LangChain 비의존)나 `build_retrievers()`(→ `.search()` 직접 호출용)로 노출된다.
+
+```
+질의(자연어 또는 인물명)
+   │
+   ├─ 벡터/하이브리드:  질의 임베딩 → chunk_emb 벡터 검색으로 앵커 Chunk 확보
+   │                    → (Chunk)<-[:EVIDENCED_BY]-(Event|CharacterState) 사실 앵커
+   │                    → 1-hop 이웃(+RELATED_TO·LOCATED_IN*·PART_OF*) 서브그래프 확장
+   │                    ⇒ content=원문 발췌+그래프 렌더 텍스트 · metadata=구조화(nodes/relationships)
+   │
+   ├─ entity_state_history: 인물명 → HAS_STATE 상태 이력을 성립 회차순 정렬(결정적 파라미터 Cypher)
+   │
+   └─ text2cypher:  자연어 → LLM이 Cypher 생성(read-only 검증) → 실행
+```
+
+- **임베딩은 Chunk에만 존재** → 벡터/하이브리드 검색의 앵커는 항상 Chunk다. Chunk를 찾은 뒤 `EVIDENCED_BY`를 **역방향**으로 타 사실(Event/CharacterState) 노드로 확장한다.
+- **content = LLM-ready 텍스트** — 각 결과를 "원문 발췌 + 관련 그래프(노드·관계)" 한 덩어리로 렌더해 소비 쪽이 프롬프트에 그대로 넣을 수 있다. `metadata`에는 같은 정보의 구조화 버전(`chapter`, `chunk_index`, `score`, `nodes`, `relationships`)을 담아 근거 추적에 쓴다.
+- **프레임워크 중립** — 반환은 라이브러리 네이티브 타입(`RetrieverResult`)과 `Tool`뿐이라 어떤 에이전트 프레임워크에든 배선된다.
+
+### 검색 도구 4종
+
+| 도구 | 방식 | 입력 | 강점 |
+|---|---|---|---|
+| `vector_cypher` | 벡터 유사도 → 그래프 확장 | 자연어 | 의미가 가까운 원문·사건 |
+| `hybrid_cypher` | 벡터 + 풀텍스트(cjk) → 그래프 확장 | 자연어 | 고유명·정확 어휘 매칭 |
+| `entity_state_history` | 결정적 파라미터 Cypher | 인물명, `up_to_chapter?` | 인물 상태 타임라인·특정 시점 조회 |
+| `text2cypher` | LLM 자연어→Cypher | 자연어 | 집계·개방형 구조 질의 |
+
+### 벡터·하이브리드 — 서브그래프 확장 (`_RETRIEVAL_QUERY`)
+
+앵커 Chunk에서 시작하는 공유 `retrieval_query`가 확장 규칙을 정의한다. `VectorCypherRetriever`와 `HybridCypherRetriever`가 이 쿼리를 공유한다.
+
+- 앵커 fact(Event/CharacterState)의 **1-hop 도메인 이웃**을 모은다(Character/Location/Organization/Item 등 6종).
+- 이웃 타입별 선택 확장: Character→`RELATED_TO`(1-hop), Location→`LOCATED_IN*`(루트까지 계층), Organization→`PART_OF*`(루트까지).
+- 모인 노드 집합 **내부의 모든 관계**를 속성까지 함께 반환 → 노드뿐 아니라 "무엇이 어떻게 연결됐는지"까지 LLM에 전달.
+- Chunk당 1개 item으로 집계(`top_k` 의미 유지). 노드→텍스트 렌더는 `result_formatter`(context.py 렌더 스타일 재사용)로 커스터마이즈.
+
+### 하이브리드 풀텍스트 analyzer = cjk
+
+`hybrid_cypher`가 쓰는 풀텍스트 인덱스 `chunk_text_ft`는 **cjk analyzer**로 만든다. 한국어는 조사·어미가 명사에 붙어(`유상아는`·`특성을`) 공백 토큰만 매칭하는 `standard`로는 대부분 놓친다. cjk는 2글자 bigram으로 분해해 recall이 크게 높다(A/B 벤치: 평균 recall **cjk 93% vs standard 27%**). Neo4j는 같은 `(Chunk, text)`에 풀텍스트 인덱스를 하나만 허용하므로 인덱스는 단일(cjk 고정)이고, **인덱싱이 벡터 인덱스와 함께 자동 생성**한다.
+
+### entity_state_history (커스텀 retriever)
+
+특정 인물의 `CharacterState` 이력을 **성립 회차순**으로 조회하는 결정적 파라미터 Cypher retriever. `up_to_chapter`로 특정 시점까지의 상태만 필터 → "그 시점에 어떤 상태였나"를 정확·완전하게 답한다(시간축 모순 감지의 핵심). `RELATED_TO` 관련 인물, `ABOUT` 대상, 근거 Chunk를 함께 반환한다. 벡터·LLM에 의존하지 않아 누락·생성 오류가 없다.
+
+### text2cypher
+
+자연어 질의를 LLM이 Cypher로 번역해 실행한다. 자동 스키마 추출 대신 **curated 스키마 + few-shot 예시**를 주입하고, 생성된 쿼리는 `EXPLAIN`으로 검사해 **read-only만 실행**(쓰기 거부). 미리 열거할 수 없는 개방형 구조·집계 질의(예: "3~7화 사건", "특정 조직 구성원")의 catch-all이다. RETURN 컬럼이 가변이라 content는 `key: value` 렌더, 아이템 metadata엔 record 전체, 생성된 쿼리는 결과 수준 `RetrieverResult.metadata["cypher"]`에 남는다.
 
 ---
 
@@ -122,6 +266,7 @@ indexing(chapter, text)              ← 진입점 함수 (poc/src/indexing.py)
 | `pipeline.py` | 추출 DAG 조립(`build_pipeline`) + LLM/embedder 생성 + 토큰 계측(`TokenCountingLLM`) |
 | `extractor.py` / `extraction_examples.py` | 커스텀 프롬프트 + few-shot |
 | `splitters.py` / `resolver.py` / `schema.py` / `client.py` | 스플리터 / 리졸버 / 스키마 / 드라이버 |
+| `retrieval.py` | **검색 계층** — 4종 retriever 팩토리 + 프레임워크 중립 Tool 노출(`build_retrievers` / `build_retrieval_tools`) |
 
 ---
 

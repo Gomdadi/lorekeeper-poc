@@ -27,21 +27,21 @@ from __future__ import annotations
 import asyncio
 import os
 
-from chunks import write_chunk_layer
-from client import get_driver
-from context import (
+from .chunks import write_chunk_layer
+from .client import get_driver
+from .context import (
     build_context,
     dump_graph_text,
     load_summaries,
     summarize_episode,
     update_global_summary,
 )
-from evidence import link_evidence
-from extraction_examples import EXTRACTION_FEW_SHOT
-from pipeline import build_pipeline
-from resolver import PerLabelResolver, collapse_merged_descriptions
-from schema import NODE_TYPES, PATTERNS, RELATIONSHIP_TYPES
-from splitters import KSSSentenceSplitter, WholeTextSplitter
+from .evidence import link_evidence
+from .extraction_examples import EXTRACTION_FEW_SHOT
+from .pipeline import build_pipeline
+from .resolver import PerLabelResolver, collapse_merged_descriptions
+from .schema import NODE_TYPES, PATTERNS, RELATIONSHIP_TYPES
+from .splitters import KSSSentenceSplitter, WholeTextSplitter
 
 # 단일 DB 이름(Community). NEO4J_DATABASE가 없으면 기본 'neo4j'.
 DATABASE = os.environ.get("NEO4J_DATABASE", "neo4j")

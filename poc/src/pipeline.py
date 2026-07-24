@@ -30,7 +30,7 @@ from neo4j_graphrag.experimental.components.text_splitters.base import TextSplit
 from neo4j_graphrag.experimental.pipeline import Pipeline
 from neo4j_graphrag.llm import OpenAILLM
 
-from extractor import KoreanWebNovelERTemplate, NovelContextExtractor
+from .extractor import KoreanWebNovelERTemplate, NovelContextExtractor
 
 # 추출(스키마·그래프)에 쓸 OpenAI 모델. 기본값 gpt-5.6-luna. GPT-5 계열이므로 temperature/top_p 등
 # 샘플링 파라미터는 전달하지 않고 모델 기본값을 쓴다(비기본 temperature는 400으로 거부됨).

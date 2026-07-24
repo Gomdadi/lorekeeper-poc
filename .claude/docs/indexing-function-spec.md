@@ -1,8 +1,9 @@
 # `indexing()` 함수 스펙
 
-`poc/src/indexing.py` — 한국어 웹소설 회차 누적 인덱싱 진입점. **한 번 호출 = 한 회차 인덱싱**이며,
-이전 회차까지 누적된 Neo4j 그래프 위에 새 회차를 얹는다(Neo4jWriter는 upsert만 하고 기존 데이터를
-지우지 않는다).
+`poc/src/indexing.py` — 한국어 웹소설 회차 누적 인덱싱 진입점. `lorekeeper` 패키지의 공개 API로, 소비
+쪽은 `from lorekeeper import indexing`으로 가져와 호출한다(`src/`가 `lorekeeper` 패키지로 매핑됨 —
+`pyproject.toml`의 `package-dir`). **한 번 호출 = 한 회차 인덱싱**이며, 이전 회차까지 누적된 Neo4j 그래프
+위에 새 회차를 얹는다(Neo4jWriter는 upsert만 하고 기존 데이터를 지우지 않는다).
 
 ## 시그니처
 
@@ -15,10 +16,31 @@ async def indexing(
 
 **반환 dict**: `{chapter, labels(라벨별 누적 노드 수), rels(관계 타입별 누적 수), tokens{request, response, total}, summary(이 회차 요약)}`
 
+## 호출 (프로그램)
+
+async 함수이므로 이벤트 루프에서 await한다. 여러 회차를 연속 인덱싱할 땐 `asyncio.run()`을 회차마다 새로
+부르지 말고 **단일 루프 안에서 `await`로 이어** 호출한다(그래야 httpx 클라이언트 정리 시 `Event loop is
+closed` 경고가 안 난다).
+
+```python
+import asyncio
+from lorekeeper import indexing
+
+async def main():
+    for ch in range(1, 7):
+        text = open(f"data/input_ch{ch}.txt", encoding="utf-8").read()
+        await indexing(ch, text)   # 회차 오름차순 순차
+
+asyncio.run(main())
+```
+
 ## CLI 실행
 
+패키지화(상대 import)로 `python src/indexing.py` 직접 실행은 더 이상 동작하지 않는다. `uv pip install -e .`
+후 **모듈로 실행**한다.
+
 ```bash
-cd poc && LOREKEEPER_CHAPTER=1 LOREKEEPER_INPUT=data/input_ch1.txt uv run python src/indexing.py
+cd poc && LOREKEEPER_CHAPTER=1 LOREKEEPER_INPUT=data/input_ch1.txt uv run python -m lorekeeper.indexing
 ```
 
 | 환경변수 | 의미 | 기본값 |
@@ -32,7 +54,7 @@ cd poc && LOREKEEPER_CHAPTER=1 LOREKEEPER_INPUT=data/input_ch1.txt uv run python
 | --- | --- | --- | --- |
 | 1 | 배경 컨텍스트 조립 | `context.dump_graph_text` + `context.load_summaries` + `context.build_context` | 아래 '배경 컨텍스트' 참조. 길이를 로그로 계측 |
 | 2 | KSS 청킹 | `KSSSentenceSplitter(chunk_size=100, overlap=0)` | overlap=0: 경계 문장이 두 `[C{i}]` 마커에 중복 노출되면 evidence 번호가 모호해져서 끔 |
-| 3 | Chunk/Chapter 레이어 | `chunks.write_chunk_layer` | Chunk 노드(결정적 uid `chunk-{chapter}-{index}`) + text-embedding-3-small 임베딩 + NEXT_CHUNK + Chapter MERGE + IN_CHAPTER + 벡터 인덱스 `chunk_emb`(1536, cosine) 보장 |
+| 3 | Chunk/Chapter 레이어 | `chunks.write_chunk_layer` | Chunk 노드(결정적 uid `chunk-{chapter}-{index}`) + text-embedding-3-small 임베딩 + NEXT_CHUNK + Chapter MERGE + IN_CHAPTER + **벡터 인덱스 `chunk_emb`(1536, cosine)** 및 **풀텍스트 인덱스 `chunk_text_ft`(cjk analyzer)** 보장 — 검색용 인덱스를 인덱싱이 함께 만든다 |
 | 4 | 추출 텍스트 조립 | `[chapter:N]` 헤더 + 각 조각 앞 `[C{index}]` 마커 | 마커 번호 = Chunk.index → evidence_chunk 매핑 근거 |
 | 5 | 추출 파이프라인 실행 | `pipeline.build_pipeline` → `pipe.run` | 회차 통째 단일 청크(WholeTextSplitter). DAG: splitter→extractor→pruner→writer→resolver, schema→extractor·pruner. few-shot(`EXTRACTION_FEW_SHOT`)·스키마(`NODE_TYPES/RELATIONSHIP_TYPES/PATTERNS`)는 run 데이터로 주입 |
 | 6 | 근거 링크 | `evidence.link_evidence` | Event/CharacterState의 `evidence_chunk`('C3' 또는 'C3,C4') → 이번 회차 Chunk에 `EVIDENCED_BY` MERGE 후 임시 property 제거 |
@@ -78,6 +100,7 @@ provenance: (Chunk)-[:NEXT_CHUNK]->(Chunk), (Chunk)-[:IN_CHAPTER]->(Chapter),
             (Chapter)-[:IN_STORY]->(Story {id:'main'})
 요약:       Chapter.summary(회차별 원천), Story.summary(전역 압축)
 벡터:       Chunk.embedding (인덱스 chunk_emb, 1536차원, cosine)
+풀텍스트:   Chunk.text (인덱스 chunk_text_ft, cjk analyzer — 하이브리드 검색용)
 ```
 
 Chunk/Chapter/Story는 `__Entity__` 라벨이 없어 resolver 대상 밖이다.

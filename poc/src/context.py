@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from pipeline import build_llm
+from .pipeline import build_llm
 
 # 그래프 덤프에서 제외할 라벨. 메타 라벨(writer 부여)과 lexical/provenance/요약 레이어
 # (Chunk/Chapter/Story)는 배경 컨텍스트로 주지 않는다 — 추출 대상은 도메인 노드다.

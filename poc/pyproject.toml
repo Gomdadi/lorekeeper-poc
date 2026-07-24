@@ -1,5 +1,7 @@
 [project]
-name = "poc"
+# distribution name을 "poc" → "lorekeeper"로 변경.
+# 소비 쪽에서 `pip install -e ./poc` 후 `from lorekeeper import ...`로 쓴다.
+name = "lorekeeper"
 version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.11"
@@ -13,3 +15,18 @@ dependencies = [
     "python-mecab-ko>=1.3.7",
     "rapidfuzz>=3.14.5",
 ]
+
+# 빌드백엔드가 명시돼 있지 않았으므로 setuptools를 명시한다.
+# uv도 이 build-system 설정을 그대로 사용해 editable/빌드 설치를 수행하므로 호환된다.
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# `src/` 디렉토리 자체를 `lorekeeper` 패키지 본문으로 매핑한다.
+# 즉 src/__init__.py → lorekeeper/__init__.py, src/indexing.py → lorekeeper/indexing.py 로 import 된다.
+package-dir = { "lorekeeper" = "src" }
+# src/ 는 평면 레이아웃(하위 패키지 디렉토리 없음)이라 packages.find로는
+# `lorekeeper` 패키지를 발견하지 못한다(find는 where 하위의 서브패키지만 스캔).
+# 따라서 단일 패키지를 명시적으로 선언한다.
+packages = ["lorekeeper"]
